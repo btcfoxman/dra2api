@@ -55,7 +55,7 @@ def test_catalog_states_evidence():
     models = public_models()
     assert len(models) == 4
     assert "observed_success" in models[0]["capabilities"]["verification"]
-    assert "official_page" in models[-1]["capabilities"]["verification"]
+    assert "9images_3videos_3audio" in models[-1]["capabilities"]["verification"]
 
 
 def test_references_are_preserved_and_audio_requires_visual_reference():
@@ -206,3 +206,26 @@ def test_all_uploaded_audio_is_forwarded_and_duration_checked(settings):
     uploads.append(MediaUpload("", "https://example.com/c.wav", "audio", "c.wav", "audio/wav", 50, 4000))
     with pytest.raises(ValueError, match="duration"):
         item.build_generation_request(payload(), uploads)
+
+
+def test_seedance25_preserves_nine_images_three_videos_three_audio(settings):
+    item = client(settings)
+    refs = {kind + '_urls': [f'https://example.com/{kind}-{i}' for i in range(count)]
+            for kind, count in [('image', 9), ('video', 3), ('audio', 3)]}
+    p = payload(model='seedance-2.5', **refs)
+    uploads = [MediaUpload('', ref['value'], kind, ref['name'], kind + '/test', 50, 0 if kind == 'image' else 2000)
+               for kind, key in [('image', '_images'), ('video', '_videos'), ('audio', '_audio')]
+               for ref in p[key]]
+    body = item.build_generation_request(p, uploads)
+    assert len(body['initial_reference_list']) == 15
+    assert {ref['url'] for ref in body['initial_reference_list']} == {u.url for u in uploads}
+
+
+def test_seedance25_audio_and_video_share_duration_limit(settings):
+    item = client(settings)
+    uploads = [MediaUpload('', f'https://example.com/{kind}', kind, kind, kind + '/test', 50, 15000)
+               for kind in ['audio', 'video']]
+    item.build_generation_request(payload(model='seedance-2.5'), uploads)
+    uploads.append(MediaUpload('', 'https://example.com/extra', 'audio', 'extra', 'audio/wav', 50, 1))
+    with pytest.raises(ValueError, match='combined audio/video'):
+        item.build_generation_request(payload(model='seedance-2.5'), uploads)

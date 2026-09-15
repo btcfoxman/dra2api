@@ -24,6 +24,7 @@ class ModelSpec:
     max_audio: int = 3
     max_audio_seconds: int = 15
     max_video_seconds: float = 15.2
+    max_audio_video_seconds: float | None = None
     max_references: int = 10
     generate_audio: bool = True
     all_in_one_reference: bool = True
@@ -48,8 +49,9 @@ MODEL_SPECS = {
         id="doubao-seedance-2-5", label="Seedance 2.5",
         upstream_model="seedance-2-5", durations=tuple(range(5, 31)),
         max_images=30, max_videos=10, max_audio=10, max_references=50,
-        max_audio_seconds=30, max_video_seconds=30,
-        verification="frontend_and_official_page_documented"),
+        max_audio_seconds=30, max_video_seconds=30, max_audio_video_seconds=30,
+        verification="observed_success_480p_16_9_5s_9images_3videos_3audio",
+        verified_combinations=((5, "480p", "16:9"),)),
 }
 DEFAULT_MODEL_MAP = {}
 for _id, _spec in MODEL_SPECS.items():
@@ -366,6 +368,7 @@ def public_models(model_map: Any = None) -> list[dict[str, Any]]:
                     },
                     "max_audio_seconds": spec.max_audio_seconds,
                     "max_video_seconds": spec.max_video_seconds,
+                    "max_audio_video_seconds": spec.max_audio_video_seconds,
                     "max_references": spec.max_references,
                     "verification": spec.verification,
                     "verified_combinations": [{"duration": duration, "resolution": resolution, "aspect_ratio": ratio}

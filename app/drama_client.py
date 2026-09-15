@@ -355,6 +355,10 @@ class DramaClient:
         for kind, maximum in (("audio", spec.max_audio_seconds), ("video", spec.max_video_seconds)):
             if sum(item.duration_ms for item in uploads if item.kind == kind) > maximum * 1000:
                 raise ValueError(f"total {kind} reference duration exceeds {maximum} seconds")
+        if (spec.max_audio_video_seconds is not None
+                and sum(item.duration_ms for item in uploads if item.kind in {"audio", "video"})
+                > spec.max_audio_video_seconds * 1000):
+            raise ValueError(f"combined audio/video reference duration exceeds {spec.max_audio_video_seconds} seconds")
         fast = {"kind": "video", "service": payload["upstream_model"], "aspect_ratio": payload["aspect_ratio"],
                 "resolution": payload["resolution"], "duration": payload["duration"]}
         references = [{"kind": "uploaded_file", "url": item.url, "media_type": item.kind,
