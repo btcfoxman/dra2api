@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import mimetypes
 import secrets
@@ -20,7 +21,7 @@ from fastapi import (
     Query,
     Request,
 )
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
@@ -38,6 +39,8 @@ from app.service import DRAService
 
 
 BASE_DIR = Path(__file__).resolve().parent
+ASSET_VERSIONS = {name: hashlib.sha256((BASE_DIR / "static" / name).read_bytes()).hexdigest()[:16]
+                  for name in ("styles.css", "app.js", "browser-assist.js")}
 database = Database(settings.database_path, settings.account_default_concurrency)
 service = DRAService(database, settings)
 
@@ -58,6 +61,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+
+
+def _html_response(html: str) -> Response:
+    for name, version in ASSET_VERSIONS.items():
+        html = html.replace("/static/" + name, f"/static/{name}?v={version}")
+    return Response(html, media_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 def _admin_token(dra_admin: str | None = Cookie(default=None)) -> None:
@@ -185,7 +194,7 @@ def health() -> dict[str, Any]:
 @app.get("/login")
 def login_page() -> Response:
     html = """<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"icon\" href=\"data:,\"><title>DRA2API 登录</title><link rel=\"stylesheet\" href=\"/static/styles.css\"></head><body class=\"login-page\"><form class=\"login-panel\" method=\"post\" action=\"/login\"><div class=\"brand-mark\">DR</div><p class=\"eyebrow\">DRAMA PROTOCOL GATEWAY</p><h1>DRA2API</h1><input name=\"username\" value=\"admin\" autocomplete=\"username\" hidden><label>管理密钥<input name=\"token\" type=\"password\" autofocus required autocomplete=\"current-password\"></label><button class=\"button primary\" type=\"submit\">登录控制台</button></form></body></html>"""
-    return Response(html, media_type="text/html")
+    return _html_response(html)
 
 
 @app.post("/login")
@@ -209,7 +218,7 @@ def logout() -> Response:
 def dashboard(dra_admin: str | None = Cookie(default=None)) -> Response:
     if not dra_admin or not secrets.compare_digest(dra_admin, settings.admin_token):
         return RedirectResponse("/login", status_code=303)
-    return FileResponse(BASE_DIR / "static" / "index.html")
+    return _html_response((BASE_DIR / "static" / "index.html").read_text(encoding="utf-8"))
 
 
 @app.get("/api/settings", dependencies=[Depends(_admin_token)])

@@ -141,4 +141,4 @@ Firebase `accounts:signInWithPassword` 接收邮箱、密码和 `returnSecureTok
 
 生产 HTTPS API Fast 验证：4 秒 / 480p / 9:16，提交到完成约 117 秒，视频账单 260 credits，结果下载与内容跳转成功。ffprobe 显示 496×864，视频轨 4.041667 秒，容器 4.096 秒；存在编码对齐。请求 generate_audio:false，但文件含非静音音轨（mean -17 dB、peak -4.9 dB），当前 hosted 指令链路不能保证关闭音频。
 
-已完成 68 项离线测试、管理端实际浏览器检查及 GitHub Actions 的构建 / 部署 / 代理运行环境 / 公网健康检查。Mini 与 Fast 的已验证组合见模型目录，其余组合保留未实测标记。
+已完成 70 项离线测试、管理端实际浏览器检查及 GitHub Actions 的构建 / 部署 / 代理运行环境 / 公网健康检查。Mini 与 Fast 的已验证组合见模型目录，其余组合保留未实测标记。

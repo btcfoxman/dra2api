@@ -1,4 +1,5 @@
 import importlib
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -80,3 +81,15 @@ def test_admin_login_settings_and_secret_masking(api, service):
 def test_https_admin_cookie_is_secure(api):
     response = api.post("/login", data={"token": "test-admin"}, headers={"X-Forwarded-Proto": "https"}, follow_redirects=False)
     assert "; Secure" in response.headers["set-cookie"]
+
+
+@pytest.mark.parametrize("path", ["/login", "/"])
+def test_html_uses_versioned_assets_to_avoid_stale_cdn_content(api, path):
+    api.post("/login", data={"token": "test-admin"}, follow_redirects=False)
+    response = api.get(path)
+    assert response.headers["cache-control"] == "no-store"
+    assets = re.findall(r'(?:src|href)="(/static/[^\"]+)"', response.text)
+    assert assets
+    assert all("?v=" in asset for asset in assets)
+    for asset in assets:
+        assert api.get(asset).status_code == 200
