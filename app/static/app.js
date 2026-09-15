@@ -77,7 +77,8 @@ function renderModels(resetPayload = true) {
   if (!state.models.some((model) => model.id === state.selectedModel) && state.models[0]) state.selectedModel = state.models[0].id;
   $("#modelTabs").innerHTML = state.models.map((model) => `<button class="${model.id === state.selectedModel ? "active" : ""}" type="button" data-model="${escapeHtml(model.id)}">${escapeHtml(model.meta?.label || model.id)}</button>`).join("");
   const selected = state.models.find((item) => item.id === state.selectedModel); const caps = selected?.capabilities || {}; const limits = caps.media_limits || {};
-  const evidence = String(caps.verification || "").startsWith("observed_success") ? "实测：5 秒 / 480p / 16:9；其他规格待实测" : "规格来自网站配置，尚未逐项实测";
+  const verified = caps.verified_combinations || [];
+  const evidence = verified.length ? `实测：${verified.map((item) => `${item.duration} 秒 / ${item.resolution} / ${item.aspect_ratio}`).join("、")}；其他规格待实测` : "规格来自网站配置，尚未逐项实测";
   $("#sampleMediaHint span").textContent = `上限 ${limits.images || 0} 图、${limits.videos || 0} 视频、${limits.audio || 0} 音频，合计 ${caps.max_references || 0} 个；${(caps.resolutions || []).join("/")}。${evidence}。`;
   $("#metricModels").textContent = state.models.length; if (resetPayload) $("#requestJson").value = JSON.stringify(defaultPayload(), null, 2); icons();
 }

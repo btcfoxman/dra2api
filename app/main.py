@@ -189,11 +189,12 @@ def login_page() -> Response:
 
 
 @app.post("/login")
-def login(token: str = Form(...)) -> Response:
+def login(request: Request, token: str = Form(...)) -> Response:
     if not secrets.compare_digest(token, settings.admin_token):
         return RedirectResponse("/login?error=1", status_code=303)
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie("dra_admin", token, httponly=True, samesite="lax", max_age=86400 * 14)
+    response.set_cookie("dra_admin", token, httponly=True, samesite="lax", max_age=86400 * 14,
+                        secure=request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https")
     return response
 
 
@@ -484,9 +485,10 @@ def integration_docs() -> Response:
 - 文生视频直接创建 hosted 视频项目；图、视频、音频参考通过签名上传链接加入同一项目
 - 默认策略：严格校验素材数量；可在设置中调整。素材总数和音视频总时长也受模型限制
 - 登录与任务协议始终使用账号绑定代理；提交前动态询价并预扣可用积分
-- Mini 5 秒 / 480p / 16:9 已完成实际生成；其他规格来自网站配置与 CLI 文档，尚未逐项实测
+- Mini 5 秒 / 480p / 16:9、Fast 4 秒 / 480p / 9:16 已完成实际生成；其他规格尚未逐项实测
 - Seedance 2.0 的 4k 仅有 CLI 文档证据；费用以上游报价为准，可使用 max_credits 限额
-- generate_audio 与 negative_prompt 通过生成指令传递；上游未提供逐项确认字段，效果需检查结果
+- max_credits 只约束视频报价，网站代理调用可能单独扣费；消耗参考记录视频任务账单
+- generate_audio 与 negative_prompt 通过生成指令传递；Fast 实测 generate_audio:false 仍有声音，当前不能保证静音
 
 ## 创建异步任务
 

@@ -82,6 +82,7 @@ def test_reject_over_budget_before_approval(service, monkeypatch):
     client.generation_detail.return_value = {"status": "PROCESSING", "pendingApprovals": [quote]}
     service._run_task(task["id"])
     assert service.db.get_task(task["id"])["error_code"] == "CREDIT_LIMIT_EXCEEDED"
+    assert service.db.get_task(task["id"])["raw_status"]["pendingApprovals"][0]["quote"]["totalCredits"] == 300
     client.approve.assert_not_called()
 
 
@@ -97,3 +98,15 @@ def test_sync_wait_returns_pending_identifier(service, monkeypatch):
     monkeypatch.setattr("app.service.time.monotonic", Mock(side_effect=[0, 2]))
     result = service.wait_task(task["id"], timeout=1)
     assert result["id"] == "pending"
+
+
+def test_initial_cost_estimate_avoids_underfunded_account(service, monkeypatch):
+    monkeypatch.setattr(service, "_schedule", lambda _: None)
+    low = service.db.upsert_account({"name": "low", "status": "active", "last_balance": 100})
+    funded = service.db.upsert_account({"name": "funded", "status": "active", "last_balance": 1000})
+    task = service.create_task({"prompt": "A lake", "model": "seedance-2.0-fast"})
+    assert task["estimated_cost"] == 325
+    selected = service._acquire_task_account(task, float("inf"))
+    assert selected["id"] == funded["id"]
+    assert selected["id"] != low["id"]
+    service.db.release_account(selected["id"], task_id=task["id"])

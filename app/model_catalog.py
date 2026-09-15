@@ -30,15 +30,17 @@ class ModelSpec:
     web_search: bool = False
     prompt_max_length: int = 20_000
     verification: str = "frontend_and_cli_documented"
+    verified_combinations: tuple[tuple[int, str, str], ...] = ()
 
 MODEL_SPECS = {
     "doubao-seedance-2-0-mini-260615": ModelSpec(
         id="doubao-seedance-2-0-mini-260615", label="Seedance 2.0 Mini",
         upstream_model="seedance-2-0-mini", durations=tuple(range(5, 13)),
-        verification="observed_success_480p_16_9_5s"),
+        verification="observed_success_480p_16_9_5s", verified_combinations=((5, "480p", "16:9"),)),
     "doubao-seedance-2-0-fast-260128": ModelSpec(
         id="doubao-seedance-2-0-fast-260128", label="Seedance 2.0 Fast",
-        upstream_model="seedance-2-0-fast"),
+        upstream_model="seedance-2-0-fast", verification="observed_success_480p_9_16_4s",
+        verified_combinations=((4, "480p", "9:16"),)),
     "doubao-seedance-2-0-260128": ModelSpec(
         id="doubao-seedance-2-0-260128", label="Seedance 2.0",
         upstream_model="seedance-2-0", resolutions=("480p", "720p", "1080p", "4k")),
@@ -60,7 +62,7 @@ VIDEO_DIMENSIONS = {}
 # Snapshot estimates; the generation approval quote and billing receipt are authoritative.
 CREDIT_RATES = {
     "seedance-2-0-mini": {"480p": 45, "720p": 90},
-    "seedance-2-0-fast": {"480p": 45, "720p": 90},
+    "seedance-2-0-fast": {"480p": 65, "720p": 90},
     "seedance-2-0": {"480p": 60, "720p": 120, "1080p": 360, "4k": 900},
     "seedance-2-5": {"480p": 100, "720p": 200},
 }
@@ -366,6 +368,9 @@ def public_models(model_map: Any = None) -> list[dict[str, Any]]:
                     "max_video_seconds": spec.max_video_seconds,
                     "max_references": spec.max_references,
                     "verification": spec.verification,
+                    "verified_combinations": [{"duration": duration, "resolution": resolution, "aspect_ratio": ratio}
+                                              for duration, resolution, ratio in spec.verified_combinations],
+                    "audio_toggle_guaranteed": False,
                     "estimated_credits_per_second": CREDIT_RATES.get(spec.upstream_model, {}),
                     "credit_source": "estimate; final upstream quote applies",
                 },

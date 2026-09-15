@@ -9,7 +9,7 @@
 | API 别名 | 上游 service | 时长 | 分辨率 | 验证程度 |
 | --- | --- | --- | --- | --- |
 | `seedance-2.0-mini` | `seedance-2-0-mini` | 5–12 秒 | 480p、720p | 5 秒 / 480p / 16:9 已完成实际生成 |
-| `seedance-2.0-fast` | `seedance-2-0-fast` | 4–15 秒 | 480p、720p | 网站配置及 CLI 文档 |
+| `seedance-2.0-fast` | `seedance-2-0-fast` | 4–15 秒 | 480p、720p | 4 秒 / 480p / 9:16 已完成实际生成 |
 | `seedance-2.0` | `seedance-2-0` | 4–15 秒 | 480p、720p、1080p、4k* | 网站配置及 CLI 文档 |
 | `seedance-2.5` | `seedance-2-5` | 5–30 秒 | 480p、720p | 网站配置及官方产品页 |
 
@@ -36,6 +36,8 @@
 docker network create my-shared-net
 docker compose up -d
 ```
+
+已有共享网络时可跳过创建步骤。GHCR 镜像已验证允许匿名拉取；也可从源码执行 `docker build -t ghcr.io/btcfoxman/dra2api:latest .` 后启动。
 
 管理端：`http://localhost:8798`；健康检查：`/health`；接口定义：`/docs`。
 
@@ -78,9 +80,13 @@ curl "$BASE_URL/v1/videos/TASK_ID" -H "Authorization: Bearer $DRA_API_KEY"
 
 `max_credits` 是本次生成允许的最高上游报价。示例 225 是一次 Mini 5 秒 / 480p 观察值；费率会变化，以审批时返回的报价及实际账单为准。
 
+该上限只约束视频生成报价。网站另有聊天、素材理解等代理调用计费，账户余额变化可能大于视频账单；即使视频报价被拒绝，也可能已产生少量代理费用。
+
 参考素材使用 `image_urls`、`video_urls`、`audio_urls`，也支持 `content` / Responses 格式的多模态输入。一次请求只接受 `n=1`。使用 `resolution` + `aspect_ratio`；未确认的 `seed`、`fps`、自定义 `width` / `height` / `size` 会被拒绝。
 
 `generate_audio` 与 `negative_prompt` 通过项目生成指令传递，报价没有逐项确认字段，不能保证供应商严格执行。网关能校验模型、时长、分辨率，并在报价提供比例时校验比例。
+
+Fast 实测请求 `generate_audio:false` 仍返回非静音音轨，当前不能据此参数保证静音。该次文件为 496×864、约 4.10 秒；分辨率和比例是上游档位，输出存在编码对齐和时长取整。
 
 ## 日志与部署
 

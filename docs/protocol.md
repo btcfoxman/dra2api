@@ -90,6 +90,8 @@ Firebase `accounts:signInWithPassword` 接收邮箱、密码和 `returnSecureTok
 
 网关仅批准一个 `generate_video` 计费项，比较 service、resolution、duration_seconds、totalCredits 与 item credits。报价有 Aspect ratio 字段时同时核对。费用不超过 `max_credits` 且本账号可预留余额才提交批准；额外计费操作、模型切换均终止任务。音频开关没有可核对的报价字段。
 
+业务价格配置还列出 chat 和 agentic_per_call_costs。`max_credits` 仅约束审批中的视频报价，不能拦截代理自行产生的其他扣费；费用样本中的 actual_cost 是视频任务账单，不是项目全量费用。本次 Mini 视频账单 225，测试前后记录的账号余额差为 229；额外 4 的具体账目未逐笔确认。
+
 ### 4. 异步结果
 
 网页实际使用 Firestore 项目 `nooka-cloudrun-250627` 的 `async_tool_jobs` 集合。REST `documents:runQuery` 按 **已创建的自有 project_id** 过滤，不扫描其他项目。此集合的网页读取路径未附带 Firebase token；网关仍核对每条记录的 project_id 与当前账号 UID，不向外提供任意项目查询入口。
@@ -103,13 +105,15 @@ Firebase `accounts:signInWithPassword` 接收邮箱、密码和 `returnSecureTok
 | 项目 | 证据与结论 |
 | --- | --- |
 | Mini | CLI：5–12 秒，480p / 720p；实际成功：5 秒 / 480p / 16:9；观察到单账号单 Mini 任务限制，默认并发 1 |
-| Fast | 网页与 CLI：4–15 秒，480p / 720p；价格表出现 1080p 不能证明支持，排除 |
+| Fast | 网页与 CLI：4–15 秒，480p / 720p；实际成功：4 秒 / 480p / 9:16；价格表出现 1080p 不能证明支持，排除 |
 | 2.0 | 网页：4–15 秒，480p / 720p / 1080p；CLI 还描述 4k，作为未实测参数暴露 |
 | 2.5 | 网页与官方页：5–30 秒、480p / 720p；个别 CLI 段落出现 1080p 与网页冲突，排除 |
 | 比例 | 网页型号配置列出 16:9、9:16、1:1、4:3、3:4、21:9；没有 adaptive |
 | 参考数量 | 当前适配限制：2.0 系列 9 图 / 3 视频 / 3 音频，总计 10；2.5 30 图 / 10 视频 / 10 音频，总计 50。子类型最大值尚未逐项实测 |
 | 参考时长 | 当前保守校验：2.0 系列视频总计 15.2 秒、音频总计 15 秒；2.5 均 30 秒；ffprobe 检查真实文件时长，尚未逐项验证上游边界 |
 | 价格 | 静态网页价格与业务价格配置不同；仅作为估算，审批报价与账单权威 |
+
+生产询价进一步确认 Fast 4 秒 / 480p / 9:16 报价 260 credits，即 65 credits/秒；旧业务配置中的 45 credits/秒已不能直接用于该次请求。180 credits 的上限验证正确拒绝了这笔生成费用。
 
 官方参考：[Seedance 2.5](https://drama.land/zh-cn/tools/seedance-2-5-video-generation)、[Seedance 2.0](https://drama.land/zh-cn/tools/seedance-2-video-generation)。不能仅凭一条 Mini 请求证明其他模型的账号权限、额度消耗、素材组合或输出画质。
 
@@ -132,3 +136,9 @@ Firebase `accounts:signInWithPassword` 接收邮箱、密码和 `returnSecureTok
 ## 验证记录
 
 2026-09-15 网关外部 API 文生视频验证：Mini、5 秒、480p、16:9、最高费用 225，提交到完成约 117 秒，返回可访问的视频 URL，账单 225 credits。API 测试请求不含用户原始提示词或素材。其余组合的校验已由离线测试覆盖，上游实际生成待验证。
+
+另已实测签名上传一个 PNG 和两条 1 秒 WAV，文件类型、音频时长及三个完整参考 URL 均通过；该检查未创建生成项目，不代表多音频生成效果已经验证。
+
+生产 HTTPS API Fast 验证：4 秒 / 480p / 9:16，提交到完成约 117 秒，视频账单 260 credits，结果下载与内容跳转成功。ffprobe 显示 496×864，视频轨 4.041667 秒，容器 4.096 秒；存在编码对齐。请求 generate_audio:false，但文件含非静音音轨（mean -17 dB、peak -4.9 dB），当前 hosted 指令链路不能保证关闭音频。
+
+已完成 65 项离线测试、管理端实际浏览器检查及 GitHub Actions 的构建 / 部署 / 代理运行环境 / 公网健康检查。Mini 与 Fast 的已验证组合见模型目录，其余组合保留未实测标记。

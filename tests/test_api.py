@@ -75,3 +75,8 @@ def test_admin_login_settings_and_secret_masking(api, service):
     assert api.get("/api/integration-docs").status_code == 200
     api.post("/logout")
     assert api.get("/api/accounts").status_code == 401
+
+
+def test_https_admin_cookie_is_secure(api):
+    response = api.post("/login", data={"token": "test-admin"}, headers={"X-Forwarded-Proto": "https"}, follow_redirects=False)
+    assert "; Secure" in response.headers["set-cookie"]

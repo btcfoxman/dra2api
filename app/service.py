@@ -37,6 +37,7 @@ from app.drama_client import (
     result_urls,
 )
 from app.model_catalog import (
+    CREDIT_RATES,
     MEDIA_LIMITS,
     model_map_json,
     normalize_generation_request,
@@ -804,7 +805,10 @@ class DRAService:
             normalized["_requested_model"] = str(
                 payload.get("model") or "doubao-seedance-2-0-mini-260615"
             )
-            normalized["_estimated_cost"] = self.db.estimate_cost(normalized)
+            normalized["_estimated_cost"] = self.db.estimate_cost(normalized) or float(
+                CREDIT_RATES.get(normalized["upstream_model"], {}).get(normalized["resolution"], 0)
+                * normalized["duration"]
+            )
             task_id = f"gen_{uuid.uuid4().hex[:16]}"
             task = self.db.create_task(
                 task_id,
@@ -1051,6 +1055,7 @@ class DRAService:
                     self._stop.wait(min(delay, max(deadline - time.monotonic(), 0)))
                     continue
                 poll_errors = 0
+                save(raw_status=detail)
                 approvals = detail.get("pendingApprovals") or []
                 for approval in approvals:
                     approval_id = str(approval.get("approvalId") or approval.get("id") or "")
