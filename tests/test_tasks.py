@@ -1,6 +1,8 @@
 from unittest.mock import Mock
 
-from app.drama_client import DramaUpstreamError
+import pytest
+
+from app.drama_client import DramaAccountSuspended, DramaAuthError, DramaRiskBlocked, DramaUpstreamError
 from app.model_catalog import normalize_generation_request
 from test_protocol import approval
 
@@ -110,3 +112,16 @@ def test_initial_cost_estimate_avoids_underfunded_account(service, monkeypatch):
     assert selected["id"] == funded["id"]
     assert selected["id"] != low["id"]
     service.db.release_account(selected["id"], task_id=task["id"])
+
+
+@pytest.mark.parametrize("error,status", [(DramaAccountSuspended(), "suspended"),
+                                         (DramaAuthError(), "login_required"),
+                                         (DramaRiskBlocked(), "challenge_required")])
+def test_blocked_accounts_are_removed_from_dispatch(service, monkeypatch, error, status):
+    account, task, client = setup_task(service, monkeypatch)
+    client.generation_detail.side_effect = error
+    service._run_task(task["id"])
+    assert service.db.get_account(account["id"])["status"] == status
+    assert service.db.available_account_count() == 0
+    assert service.db.get_account(account["id"])["active_tasks"] == 0
+    assert client.account_state.call_count == 1

@@ -1112,12 +1112,16 @@ class DRAService:
             save(status="expired" if code == "TASK_TIMEOUT" else "failed", progress=100,
                  error_code=code, error_message=str(exc), completed_at=now_ts())
             if account:
-                if isinstance(exc, (DramaAuthError, DramaRiskBlocked)):
-                    self.db.update_account(int(account["id"]), {"status": "login_required", "last_error": str(exc)})
-                try:
-                    self._store_account_state(int(account["id"]), account, self._client(account).account_state())
-                except DramaUpstreamError:
-                    pass
+                if isinstance(exc, DramaAccountSuspended):
+                    self._mark_account_suspended(int(account["id"]))
+                elif isinstance(exc, (DramaAuthError, DramaRiskBlocked)):
+                    status = "challenge_required" if isinstance(exc, DramaRiskBlocked) else "login_required"
+                    self.db.update_account(int(account["id"]), {"status": status, "last_error": str(exc)})
+                else:
+                    try:
+                        self._store_account_state(int(account["id"]), account, self._client(account).account_state())
+                    except DramaUpstreamError:
+                        pass
         finally:
             if account and not preserve_slot:
                 self.db.release_account(int(account["id"]), task_id=task_id)
