@@ -1,0 +1,38 @@
+services:
+  dra2api:
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-btcfoxman}/${IMAGE_NAME:-dra2api}:${IMAGE_TAG:-latest}
+    container_name: ${DRA2API_CONTAINER_NAME:-dra2api}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-Asia/Taipei}
+      PYTHONUNBUFFERED: "1"
+      DRA_CHROME_EXECUTABLE: ${DRA_CHROME_EXECUTABLE:-/usr/bin/chromium}
+      DRA_CHROME_USER_DATA_ROOT: /app/data/dra-chrome-profiles
+      DRA_PROXY_HOST_OVERRIDE: ${DRA_PROXY_HOST_OVERRIDE:-host.docker.internal}
+      DRA_MODEL_MAP: ${DRA_MODEL_MAP:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+    shm_size: "512mb"
+    ports:
+      - "${DRA2API_PORT:-8798}:8798"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8798/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - my-shared-net
+
+networks:
+  my-shared-net:
+    external: true

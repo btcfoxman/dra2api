@@ -1,0 +1,134 @@
+# Drama.Land 协议与规格证据
+
+分析日期：2026-09-15。依据一次用户手动操作的网络记录、当前网页运行时配置、网站提供的模型 CLI 说明、当前账号的只读查询，以及一次网关实际生成。原始流量与用户内容未发布。
+
+## 完整链路
+
+```mermaid
+sequenceDiagram
+    participant C as 调用方
+    participant G as DRA2API
+    participant F as Firebase Auth
+    participant D as Drama hosted 服务
+    participant A as 网站项目代理
+    participant J as Firestore 异步任务
+    C->>G: POST /v1/videos
+    G->>F: 登录或刷新 ID token
+    G->>D: GET 用户与余额
+    opt 参考素材
+        G->>D: POST /api/v1/upload-url
+        G->>D: PUT 签名地址上传文件
+    end
+    G->>D: POST /api/v1/hosted/create
+    D-->>G: project_id
+    G->>A: POST /api/pi/prompt
+    loop 等待报价与任务
+        G->>J: 按自有 project_id 查询 async_tool_jobs
+        G->>A: GET /api/pi/status
+        A-->>G: pendingApprovals
+        G->>G: 校验规格、费用上限与可用余额
+        G->>A: POST /tool-approvals/{id}/respond
+    end
+    J-->>G: completed + result.url + billing
+    C->>G: GET /v1/videos/{id}
+    G-->>C: succeeded + data[].url
+```
+
+### 1. 身份认证
+
+Firebase `accounts:signInWithPassword` 接收邮箱、密码和 `returnSecureToken:true`，返回 ID token 与 refresh token。刷新使用 `securetoken.googleapis.com/v1/token`，表单字段为 `grant_type=refresh_token` 与 `refresh_token`。观察到 ID token 有效期 3600 秒。
+
+浏览器会话位于 IndexedDB `firebaseLocalStorageDb/firebaseLocalStorage`，记录键以 `firebase:authUser:` 开头。网关读取 `stsTokenManager`，验证业务接口返回的 UID / 邮箱后保存。Firebase Web API key 是客户端项目标识，不等同于登录凭据。
+
+### 2. 业务 API
+
+业务源站 `https://agentic.dramastudio.ai` 使用 `Authorization: Bearer <ID token>`。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/v1/user/get_user_info` | UID、邮箱、套餐、功能 |
+| `GET /api/v1/user/credits/summary` | 积分余额及批次 |
+| `GET /api/v1/user/get_points_config` | 价格配置参考 |
+| `GET /api/v1/subscription/current` | 订阅信息 |
+| `GET /api/v1/task/list` | 签到等奖励任务，并非视频生成列表 |
+| `POST /api/v1/task/daily-check` | 记录每日签到 |
+| `POST /api/v1/task/claim` | 领取 `daily_login` 奖励 |
+| `POST /api/v1/upload-url` | 申请素材签名上传地址 |
+| `POST /api/v1/hosted/create` | 创建视频项目 |
+
+签名上传请求包含 `filename`、`content_type`、`size_bytes`。按返回的 `upload_url` 使用相同 Content-Type PUT 文件，引用 `public_url`。签名有时效，不能当作长期素材地址。
+
+创建项目的关键字段：
+
+```json
+{
+  "name": "A lake at sunrise",
+  "project_type": "video",
+  "initial_intent": "A lake at sunrise",
+  "initial_reference_list": [],
+  "agent_profile": "fast",
+  "fast_generation": {
+    "kind": "video", "service": "seedance-2-0-mini",
+    "aspect_ratio": "16:9", "resolution": "480p", "duration": 5
+  },
+  "user_language": "zh-cn"
+}
+```
+
+每个参考必须携带真实 URL。观察到网站一次音乐引用没有 URL，未被工具消费；网关统一使用 `uploaded_file` 加 `url`、`media_type`、`mime_type`、`filename`，保留多音频输入。
+
+### 3. 项目代理及费用审批
+
+网站源站 `https://drama.land` 的 `/api/pi/*` 同时需要 Bearer token 与 `X-Project-Id`。
+
+- `POST /api/pi/prompt`，`{"text":"","language":"zh-cn"}` 启动初始意图处理。
+- `GET /api/pi/status` 返回流式状态与待审批报价。
+- `POST /api/pi/tool-approvals/{approvalId}/respond`，`{"decision":"approved"}` 批准费用。
+- `/api/pi/history`、`/api/pi/project` 可辅助手动排查；网关无需下载整段对话。
+
+这是一条受网站代理调度的链路；代理可能重写提示词、要求补充输入或拒绝执行。`fast_generation` 不是直接供应商生成接口。
+
+网关仅批准一个 `generate_video` 计费项，比较 service、resolution、duration_seconds、totalCredits 与 item credits。报价有 Aspect ratio 字段时同时核对。费用不超过 `max_credits` 且本账号可预留余额才提交批准；额外计费操作、模型切换均终止任务。音频开关没有可核对的报价字段。
+
+### 4. 异步结果
+
+网页实际使用 Firestore 项目 `nooka-cloudrun-250627` 的 `async_tool_jobs` 集合。REST `documents:runQuery` 按 **已创建的自有 project_id** 过滤，不扫描其他项目。此集合的网页读取路径未附带 Firebase token；网关仍核对每条记录的 project_id 与当前账号 UID，不向外提供任意项目查询入口。
+
+解码 Firestore typed values 后关注：`job_ref`、`status`、`service`、`user_id`、`project_id`、`result.url`、`agent_body.assets`、`billing.credits/status`。顶层 `status=completed` 是完成依据；供应商子状态可能滞后。已完成任务的查询不依赖网站代理在线。
+
+网站还使用 SSE / Centrifugo 同步代理进度。网关选择持久化任务加轮询，不依赖浏览器保持打开，也不调用把结果重新注入代理对话的 dispatch 操作。
+
+## 参数推导的边界
+
+| 项目 | 证据与结论 |
+| --- | --- |
+| Mini | CLI：5–12 秒，480p / 720p；实际成功：5 秒 / 480p / 16:9；观察到单账号单 Mini 任务限制，默认并发 1 |
+| Fast | 网页与 CLI：4–15 秒，480p / 720p；价格表出现 1080p 不能证明支持，排除 |
+| 2.0 | 网页：4–15 秒，480p / 720p / 1080p；CLI 还描述 4k，作为未实测参数暴露 |
+| 2.5 | 网页与官方页：5–30 秒、480p / 720p；个别 CLI 段落出现 1080p 与网页冲突，排除 |
+| 比例 | 网页型号配置列出 16:9、9:16、1:1、4:3、3:4、21:9；没有 adaptive |
+| 参考数量 | 当前适配限制：2.0 系列 9 图 / 3 视频 / 3 音频，总计 10；2.5 30 图 / 10 视频 / 10 音频，总计 50。子类型最大值尚未逐项实测 |
+| 参考时长 | 当前保守校验：2.0 系列视频总计 15.2 秒、音频总计 15 秒；2.5 均 30 秒；ffprobe 检查真实文件时长，尚未逐项验证上游边界 |
+| 价格 | 静态网页价格与业务价格配置不同；仅作为估算，审批报价与账单权威 |
+
+官方参考：[Seedance 2.5](https://drama.land/zh-cn/tools/seedance-2-5-video-generation)、[Seedance 2.0](https://drama.land/zh-cn/tools/seedance-2-video-generation)。不能仅凭一条 Mini 请求证明其他模型的账号权限、额度消耗、素材组合或输出画质。
+
+## 风控与失败处理
+
+| 信号 | 处理 |
+| --- | --- |
+| ID token 过期 / 401 | 使用 refresh token，持久化轮换凭据；明确 401 后最多重发一次 |
+| Firebase CAPTCHA / MFA、浏览器 challenge | 标记需登录 / 人工验证，由用户在浏览器完成 |
+| 403 / 账号停用 | 暂停当前请求，记录错误；不绕过验证 |
+| 429 | 读取 Retry-After 并退避，不因限流重新创建项目 |
+| 提交或审批发生网络超时 | 保存已发出的标记，查询原项目，不盲目重放可能计费的写入 |
+| 代理停流且无报价 / 任务 | 等待短暂同步窗口后返回 AGENT_INPUT_REQUIRED，保留项目供人工检查 |
+| 任务总超时 | 返回 expired；重试继续原项目查询，避免重复扣费 |
+| 上游生成失败 | 保留原错误与计费状态；不承诺已退款，退款以账单为准 |
+| 素材下载 / 解码失败、规格越界 | 拒绝生成并提供可定位的错误 |
+
+账号身份、代理出口、浏览器登录状态应保持一致。网关默认每账号并发 1；提高并发前应验证账号与型号限制。
+
+## 验证记录
+
+2026-09-15 网关外部 API 文生视频验证：Mini、5 秒、480p、16:9、最高费用 225，提交到完成约 117 秒，返回可访问的视频 URL，账单 225 credits。API 测试请求不含用户原始提示词或素材。其余组合的校验已由离线测试覆盖，上游实际生成待验证。
