@@ -107,7 +107,7 @@ svg { width: 14px; height: 14px; stroke-width: 1.8; }
 .segmented button.active { background: #284039; color: var(--mint); }
 .segmented b { margin-left: 3px; font-family: "Cascadia Mono", monospace; }
 .table-wrap { position: relative; overflow: auto; max-height: 300px; scrollbar-gutter: stable; overscroll-behavior: contain; }
-.tasks-wrap { max-height: none; overflow: visible; scrollbar-gutter: auto; }
+.tasks-wrap { max-height: none; overflow: auto; scrollbar-gutter: auto; }
 table { width: 100%; border-collapse: collapse; white-space: nowrap; }
 th { position: sticky; top: 0; z-index: 1; padding: 6px 8px; background: #181d22; color: var(--muted); font-size: 9px; font-weight: 600; text-align: left; }
 td { max-width: 320px; padding: 5px 8px; border-top: 1px solid var(--line-soft); vertical-align: middle; }
@@ -471,10 +471,10 @@ textarea { resize: vertical; }
 .toast.show { opacity: 1; transform: translateY(0); }
 .toast.error { border-color: #964b4a; background: #451f20; }
 .login-page { display: grid; place-items: center; }
-.login-card { width: min(340px, calc(100vw - 24px)); padding: 18px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow); }
-.login-card .brand-mark { margin-bottom: 10px; }
-.login-card h1 { margin-bottom: 16px; }
-.login-card button { width: 100%; margin-top: 10px; min-height: 34px; border: 1px solid #329f7d; border-radius: 3px; background: #17634f; color: white; }
+.login-card, .login-panel { width: min(340px, calc(100vw - 24px)); padding: 18px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow); }
+.login-card .brand-mark, .login-panel .brand-mark { margin-bottom: 10px; }
+.login-card h1, .login-panel h1 { margin-bottom: 16px; }
+.login-card button, .login-panel button { width: 100%; margin-top: 10px; min-height: 34px; border: 1px solid #329f7d; border-radius: 3px; background: #17634f; color: white; }
 @media (max-width: 1180px) {
   .account-settings-card, .browser-settings-card { grid-column: span 6; }
   .proxy-settings-card { grid-column: 1 / -1; }
