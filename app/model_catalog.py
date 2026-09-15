@@ -40,8 +40,9 @@ MODEL_SPECS = {
         verification="observed_success_480p_16_9_5s", verified_combinations=((5, "480p", "16:9"),)),
     "doubao-seedance-2-0-fast-260128": ModelSpec(
         id="doubao-seedance-2-0-fast-260128", label="Seedance 2.0 Fast",
-        upstream_model="seedance-2-0-fast", verification="observed_success_480p_9_16_4s",
-        verified_combinations=((4, "480p", "9:16"),)),
+        upstream_model="seedance-2-0-fast", max_references=15,
+        verification="observed_success_480p_4s_9images_3videos_3audio",
+        verified_combinations=((4, "480p", "9:16"), (4, "480p", "16:9"))),
     "doubao-seedance-2-0-260128": ModelSpec(
         id="doubao-seedance-2-0-260128", label="Seedance 2.0",
         upstream_model="seedance-2-0", resolutions=("480p", "720p", "1080p", "4k")),

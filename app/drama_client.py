@@ -365,6 +365,9 @@ class DramaClient:
                        "mime_type": item.content_type, "filename": item.name} for item in uploads]
         instructions = "\n\n生成要求：只创建一个视频任务，保持上述提示词含义及所有参考素材；严格使用以下参数，不切换模型、时长、分辨率或比例。"
         instructions += json.dumps({**fast, "generate_audio": payload.get("generate_audio", True)}, ensure_ascii=False)
+        if references:
+            instructions += "\n多图片、视频、音频分别使用 image_urls、video_urls、reference_audio_urls 数组，CLI 分别使用 --image-urls、--video-urls、--reference-audio-urls；不要重复传递单数参数，否则只保留最后一份素材。"
+        instructions += "\n仅使用本项目真实素材进行一次生成，不执行示例或测试生成，不使用 example.com 等占位素材，不使用 --echo-parsed；完成提交后只查询该任务。"
         if payload.get("negative_prompt"):
             instructions += "\n避免内容：" + payload["negative_prompt"]
         return {"name": payload["prompt"][:80], "project_type": "video", "initial_intent": payload["prompt"] + instructions,

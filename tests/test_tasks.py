@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -55,6 +55,28 @@ def test_recovery_queries_existing_project_without_resubmission(service, monkeyp
     client.create_project.assert_not_called()
     client.start_generation.assert_not_called()
     client.approve.assert_not_called()
+
+
+@pytest.mark.parametrize("uncertain_denial", [False, True])
+def test_duplicate_quote_is_denied_without_losing_paid_job(service, monkeypatch, uncertain_denial):
+    _, task, client = setup_task(service, monkeypatch)
+    extra = approval()
+    extra['approvalId'] = 'quote-2'
+    client.generation_detail.side_effect = [
+        {'status': 'PROCESSING', 'pendingApprovals': [approval()], 'isStreaming': True},
+        {'status': 'PROCESSING', 'job_ref': 'job-1', 'pendingApprovals': [extra]},
+        {'status': 'PROCESSING', 'job_ref': 'job-1', 'pendingApprovals': [extra]},
+        completed(),
+    ]
+    if uncertain_denial:
+        client.approve.side_effect = [{'ok': True}, DramaUpstreamError('timeout', code='SUBMISSION_UNCERTAIN')]
+    service._run_task(task['id'])
+    done = service.db.get_task(task['id'])
+    assert done['status'] == 'succeeded'
+    assert done['actual_cost'] == 225
+    assert done['upstream_response']['protocol']['denied_approval_ids'] == ['quote-2']
+    assert client.approve.call_args_list == [call('project-1', 'quote-1'), call('project-1', 'quote-2', decision='denied')]
+    client.create_project.assert_called_once()
 
 
 def test_new_project_retry_clears_old_approval(service, monkeypatch):

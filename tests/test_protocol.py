@@ -208,11 +208,12 @@ def test_all_uploaded_audio_is_forwarded_and_duration_checked(settings):
         item.build_generation_request(payload(), uploads)
 
 
-def test_seedance25_preserves_nine_images_three_videos_three_audio(settings):
+@pytest.mark.parametrize('model', ['seedance-2.5', 'seedance-2.0-fast'])
+def test_multimodal_models_preserve_nine_images_three_videos_three_audio(settings, model):
     item = client(settings)
     refs = {kind + '_urls': [f'https://example.com/{kind}-{i}' for i in range(count)]
             for kind, count in [('image', 9), ('video', 3), ('audio', 3)]}
-    p = payload(model='seedance-2.5', **refs)
+    p = payload(model=model, **refs)
     uploads = [MediaUpload('', ref['value'], kind, ref['name'], kind + '/test', 50, 0 if kind == 'image' else 2000)
                for kind, key in [('image', '_images'), ('video', '_videos'), ('audio', '_audio')]
                for ref in p[key]]

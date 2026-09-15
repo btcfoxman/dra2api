@@ -1065,7 +1065,21 @@ class DRAService:
                     if approved == approval_id:
                         continue
                     if approved:
-                        raise DramaUpstreamError("上游请求了额外的生成费用", code="EXTRA_GENERATION_QUOTE")
+                        denied = protocol.setdefault("denied_approval_ids", [])
+                        if approval_id not in denied:
+                            # Keep tracking the paid job when the site agent
+                            # proposes another generation. Never fund a second.
+                            denied.append(approval_id)
+                            protocol.setdefault("extra_quotes", []).append(approval)
+                            save()
+                            try:
+                                client.approve(project_id, approval_id, decision="denied")
+                            except DramaUpstreamError as exc:
+                                if exc.code != "SUBMISSION_UNCERTAIN":
+                                    raise
+                                protocol["denial_uncertain"] = True
+                                save()
+                        continue
                     credits = validate_approval(approval, payload)
                     if not self.db.reserve_task_balance(task_id, account_id, credits):
                         raise DramaUpstreamError("账号余额不足以支付当前报价", code="INSUFFICIENT_CREDITS", status_code=402)
