@@ -398,7 +398,12 @@ class DramaClient:
 
     def generation_detail(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         jobs = self.project_jobs(project_id)
-        video_jobs = [job for job in jobs if job.get("type") == "video" or str(job.get("task_id", "")).startswith("ag:video:")]
+        # Seedance 2.5 initially stores only the submit trace fields. Recognize
+        # that record before the callback adds type/task_id/result metadata.
+        video_jobs = [job for job in jobs if job.get("type") == "video"
+                      or job.get("task_action") == "generate_video"
+                      or job.get("task_subcommand") == "generate-video"
+                      or str(job.get("task_id", "")).startswith("ag:video:")]
         if payload:
             for job in video_jobs:
                 if (job.get("service") or job.get("task_service")) != payload["upstream_model"]:

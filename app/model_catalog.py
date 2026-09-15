@@ -64,7 +64,7 @@ CREDIT_RATES = {
     "seedance-2-0-mini": {"480p": 45, "720p": 90},
     "seedance-2-0-fast": {"480p": 65, "720p": 90},
     "seedance-2-0": {"480p": 60, "720p": 120, "1080p": 360, "4k": 900},
-    "seedance-2-5": {"480p": 100, "720p": 200},
+    "seedance-2-5": {"480p": 130, "720p": 200},
 }
 
 def parse_model_map(value: Any) -> dict[str, str]:

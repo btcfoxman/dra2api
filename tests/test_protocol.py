@@ -151,6 +151,43 @@ def test_completed_job_does_not_require_site_agent(settings):
     assert firestore_document(firestore_row()["document"])["job_ref"] == "job-1"
 
 
+def trace_job(**changes):
+    return {"job_ref": "trace-job", "task_action": "generate_video",
+            "task_subcommand": "generate-video", "task_service": "seedance-2-5",
+            "status": "pending", "billing": {"credits": 650}, **changes}
+
+
+def test_submit_trace_is_visible_while_agent_is_idle(settings):
+    item = client(settings)
+    item.project_jobs = Mock(return_value=[trace_job()])
+    item._request = Mock(return_value={"isStreaming": False})
+    detail = item.generation_detail("owned-project", payload(model="seedance-2.5"))
+    assert detail["job_ref"] == "trace-job"
+    assert detail["status"] == "PROCESSING"
+    assert detail["actual_cost"] == 650
+
+
+def test_completed_submit_trace_returns_result_without_site_agent(settings):
+    item = client(settings)
+    item.project_jobs = Mock(return_value=[trace_job(status="completed", result={"url": "https://example.com/video.mp4"})])
+    item._request = Mock(side_effect=AssertionError("completed jobs must not query the site"))
+    detail = item.generation_detail("owned-project", payload(model="seedance-2.5"))
+    assert detail["status"] == "COMPLETE"
+    assert result_urls(detail) == ["https://example.com/video.mp4"]
+
+
+@pytest.mark.parametrize("jobs,code", [
+    ([trace_job(task_service="seedance-2-0")], "UPSTREAM_MODEL_MISMATCH"),
+    ([trace_job(), trace_job(job_ref="another-job")], "MULTIPLE_UPSTREAM_JOBS"),
+])
+def test_submit_trace_enforces_model_and_single_generation(settings, jobs, code):
+    item = client(settings)
+    item.project_jobs = Mock(return_value=jobs)
+    with pytest.raises(DramaUpstreamError) as error:
+        item.generation_detail("owned-project", payload(model="seedance-2.5"))
+    assert error.value.code == code
+
+
 @pytest.mark.parametrize("owner,project", [("other", "owned-project"), ("owner", "other-project")])
 def test_jobs_are_scoped_to_current_owner_and_project(settings, owner, project):
     item = client(settings)
