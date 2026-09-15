@@ -48,7 +48,7 @@ MODEL_SPECS = {
         upstream_model="seedance-2-0", resolutions=("480p", "720p", "1080p", "4k")),
     "doubao-seedance-2-5": ModelSpec(
         id="doubao-seedance-2-5", label="Seedance 2.5",
-        upstream_model="seedance-2-5", durations=tuple(range(5, 31)),
+        upstream_model="seedance-2-5", durations=tuple(range(4, 31)),
         max_images=30, max_videos=10, max_audio=10, max_references=50,
         max_audio_seconds=30, max_video_seconds=30, max_audio_video_seconds=30,
         verification="observed_success_480p_16_9_5s_9images_3videos_3audio",

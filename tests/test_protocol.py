@@ -25,7 +25,7 @@ def approval():
     ("seedance-2.0-mini", (5, 12), ("480p", "720p")),
     ("seedance-2.0-fast", (4, 15), ("480p", "720p")),
     ("seedance-2.0", (4, 15), ("480p", "720p", "1080p", "4k")),
-    ("seedance-2.5", (5, 30), ("480p", "720p")),
+    ("seedance-2.5", (4, 30), ("480p", "720p")),
 ])
 def test_model_matrix(model, seconds, resolutions):
     for duration in seconds:
