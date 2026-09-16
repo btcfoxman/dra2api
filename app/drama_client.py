@@ -366,13 +366,38 @@ class DramaClient:
                     raise ValueError("reference file could not be decoded") from exc
         signed = self._request("POST", self.base + "/api/v1/upload-url",
                                json={"filename": name, "content_type": content_type, "size_bytes": len(data)})
-        try:
-            response = self.session.put(signed["upload_url"], data=data, headers={"Content-Type": content_type},
-                                        timeout=self.settings.media_timeout_seconds)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise DramaUpstreamError("素材上传失败", code="MEDIA_UPLOAD_FAILED") from exc
+        self._upload_bytes(signed["upload_url"], data, content_type)
         return MediaUpload("", signed["public_url"], kind, name, content_type, len(data), duration_ms, width, height)
+
+    def _upload_bytes(self, url: str, data: bytes, content_type: str) -> None:
+        # A signed object PUT can safely resend identical bytes, even when its
+        # response was lost. Never repeat the signing POST or video submission.
+        attempts = []
+        retries = max(0, min(int(self.settings.request_retries), 5))
+        for index in range(retries + 1):
+            response = None
+            try:
+                response = self.session.put(url, data=data, headers={"Content-Type": content_type},
+                                            timeout=self.settings.media_timeout_seconds)
+                response.raise_for_status()
+                return
+            except requests.RequestException as exc:
+                status = response.status_code if response is not None else None
+                retryable = (status in {408, 425, 429} or (status is not None and status >= 500)
+                             or (status is None and isinstance(exc, (requests.Timeout, requests.ConnectionError))))
+                attempts.append({"attempt": index + 1, "error_type": type(exc).__name__,
+                                 "status_code": status, "retryable": retryable})
+                if not retryable or index >= retries:
+                    raise DramaUpstreamError("素材上传失败", code="MEDIA_UPLOAD_FAILED",
+                                             details={"attempts": attempts}) from exc
+                retry_after = rate_limit_retry_after("", response.headers.get("Retry-After")) if response is not None else None
+                delay = min(30, max(2 ** index, retry_after or 0))
+                LOGGER.warning("Media object PUT failed (attempt=%s status=%s error=%s); retrying",
+                               index + 1, status, type(exc).__name__)
+            finally:
+                if response is not None:
+                    response.close()
+            time.sleep(delay)
 
     def build_generation_request(self, payload: dict[str, Any], uploads: list[MediaUpload]) -> dict[str, Any]:
         spec = model_spec(payload["model"])
@@ -392,6 +417,7 @@ class DramaClient:
         if references:
             instructions += "\n多图片、视频、音频分别使用 image_urls、video_urls、reference_audio_urls 数组，CLI 分别使用 --image-urls、--video-urls、--reference-audio-urls；不要重复传递单数参数，否则只保留最后一份素材。"
         instructions += "\n仅使用本项目真实素材进行一次生成，不执行示例或测试生成，不使用 example.com 等占位素材，不使用 --echo-parsed；完成提交后只查询该任务。"
+        instructions += "\n将完整提示词保存为 UTF-8 文件，使用 --prompt=@file:/workspace/prompt.txt，避免对白引号或换行破坏 shell 转义；仅在命令尚未执行的解析错误时修复命令，不重复提交已有视频任务。"
         if payload.get("negative_prompt"):
             instructions += "\n避免内容：" + payload["negative_prompt"]
         return {"name": payload["prompt"][:80], "project_type": "video", "initial_intent": payload["prompt"] + instructions,
@@ -408,6 +434,14 @@ class DramaClient:
     def start_generation(self, project_id: str, language: str = "zh-cn") -> dict[str, Any]:
         return self._request("POST", self.site + "/api/pi/prompt", project_id=project_id,
                              json={"text": "", "language": language})
+
+    def project_history(self, project_id: str) -> dict[str, Any]:
+        return self._request("GET", self.site + "/api/pi/history", project_id=project_id)
+
+    def continue_generation(self, project_id: str, language: str = "zh-cn") -> dict[str, Any]:
+        return self._request("POST", self.site + "/api/pi/prompt", project_id=project_id,
+                             json={"text": "确认提交。保持原模型、时长、分辨率、比例、提示词及全部参考素材，仅修复命令转义；将完整提示词写入 UTF-8 文件并使用 --prompt=@file:/workspace/prompt.txt。若已有视频任务则只查询，禁止重复生成。",
+                                   "language": language})
 
     def approve(self, project_id: str, approval_id: str, decision: str = "approved") -> dict[str, Any]:
         return self._request("POST", self.site + "/api/pi/tool-approvals/" + quote(approval_id, safe="") + "/respond",

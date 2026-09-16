@@ -24,6 +24,7 @@ from app.browser_context import (
     stop_managed_browser,
 )
 from app.config import normalize_proxy_url
+from app.approval_recovery import recovery_evidence, same_production_settings
 from app.db import Database, now_ts
 from app.drama_client import (
     DramaAccountSuspended,
@@ -982,6 +983,20 @@ class DRAService:
         ) else "rejected"
         def save(**changes: Any) -> None:
             self.db.update_task(task_id, upstream_response={"protocol": protocol}, **changes)
+
+        def inspect_recovery(pending: list[dict[str, Any]]) -> dict[str, Any] | None:
+            if protocol.get("job_ref"):
+                return None
+            try:
+                evidence = recovery_evidence(client.project_history(project_id), protocol, pending)
+                # Recheck after reading history: absence alone never authorizes
+                # a retry, and any newly visible job vetoes the evidence.
+                if evidence and not client.project_jobs(project_id):
+                    return evidence
+            except DramaUpstreamError as exc:
+                protocol["last_recovery_error"] = {"code": exc.code, "message": str(exc)}
+                save()
+            return None
         try:
             account = self._acquire_task_account(task, deadline)
             account_id = int(account["id"])
@@ -998,9 +1013,9 @@ class DRAService:
                     try:
                         uploads.append(client.upload_media(str(item["value"]), kind, str(item.get("name") or f"{kind}{index + 1}")))
                     except DramaUpstreamError as exc:
-                        if exc.code == "MEDIA_DOWNLOAD_FAILED":
-                            protocol["media_download_error"] = {"reference_index": index + 1, "kind": kind,
-                                                                **(exc.details or {})}
+                        if exc.code in {"MEDIA_DOWNLOAD_FAILED", "MEDIA_UPLOAD_FAILED"}:
+                            key = "media_download_error" if exc.code == "MEDIA_DOWNLOAD_FAILED" else "media_upload_error"
+                            protocol[key] = {"reference_index": index + 1, "kind": kind, **(exc.details or {})}
                         raise
                     save(progress=5 + int(20 * (index + 1) / max(len(sources), 1)))
                 request = client.build_generation_request(payload, uploads)
@@ -1045,6 +1060,8 @@ class DRAService:
                     self._stop.wait(min(delay, max(deadline - time.monotonic(), 0)))
                     continue
                 poll_errors = 0
+                if detail.get("job_ref"):
+                    protocol["job_ref"] = detail["job_ref"]
                 save(raw_status=detail)
                 approvals = detail.get("pendingApprovals") or []
                 for approval in approvals:
@@ -1054,7 +1071,10 @@ class DRAService:
                     approved = protocol.get("approved_id")
                     if approved == approval_id:
                         continue
-                    if approved:
+                    if approval_id in (protocol.get("denied_approval_ids") or []):
+                        continue
+                    evidence = inspect_recovery(approvals) if approved and not protocol.get("job_ref") else None
+                    if protocol.get("job_ref") or (approved and not evidence):
                         denied = protocol.setdefault("denied_approval_ids", [])
                         if approval_id not in denied:
                             # Keep tracking the paid job when the site agent
@@ -1071,9 +1091,18 @@ class DRAService:
                                 save()
                         continue
                     credits = validate_approval(approval, payload)
+                    if evidence:
+                        if (credits > float(protocol.get("quoted_credits") or 0)
+                                or (approval.get("dryRun") or {}).get("status") != "passed"
+                                or not same_production_settings(protocol.get("quote") or {}, approval.get("quote") or {})):
+                            raise DramaUpstreamError("续交报价的素材、参数或费用与原请求不一致", code="APPROVAL_MISMATCH")
                     if not self.db.reserve_task_balance(task_id, account_id, credits):
                         raise DramaUpstreamError("账号余额不足以支付当前报价", code="INSUFFICIENT_CREDITS", status_code=402)
-                    protocol.update(approved_id=approval_id, quoted_credits=credits, quote=approval.get("quote"))
+                    if evidence:
+                        protocol.setdefault("approval_repairs", []).append({**evidence, "approval_id": approval_id})
+                    protocol.pop("approval_uncertain", None)
+                    protocol.update(approved_id=approval_id, approved_tool_call_id=approval.get("toolCallId"),
+                                    quoted_credits=credits, quote=approval.get("quote"))
                     save(estimated_cost=credits, progress=40)
                     try:
                         protocol["approval_response"] = client.approve(project_id, approval_id)
@@ -1082,8 +1111,6 @@ class DRAService:
                             raise
                         protocol["approval_uncertain"] = True
                     save()
-                if detail.get("job_ref"):
-                    protocol["job_ref"] = detail["job_ref"]
                 save(status="running", progress=70 if detail.get("job_ref") else 35,
                      raw_status=detail)
                 if detail["status"] == "COMPLETE":
@@ -1105,6 +1132,24 @@ class DRAService:
                     failure_outcome = "failed"
                     raise DramaUpstreamError(failure_reason(detail), code=str(detail.get("error_code") or "GENERATION_FAILED"), details=detail)
                 if not detail.get("job_ref") and not detail.get("isStreaming") and not approvals:
+                    evidence = inspect_recovery([]) if protocol.get("approved_id") else None
+                    continuations = protocol.setdefault("continuations", [])
+                    if evidence and not any(item.get("failed_tool_call_id") == evidence["failed_tool_call_id"] for item in continuations):
+                        continuation = {**evidence, "started_at": now_ts()}
+                        continuations.append(continuation)
+                        # Durable intent precedes the write. A lost response or
+                        # restart must not send the same continuation twice.
+                        save()
+                        try:
+                            continuation["response"] = client.continue_generation(project_id, str(payload.get("language") or "zh-cn"))
+                        except DramaUpstreamError as exc:
+                            if exc.code != "SUBMISSION_UNCERTAIN":
+                                raise
+                            continuation["uncertain"] = True
+                        save()
+                        idle_since = None
+                        self._stop.wait(min(self.settings.poll_interval_seconds, max(deadline - time.monotonic(), 0)))
+                        continue
                     idle_since = idle_since or time.monotonic()
                     if time.monotonic() - idle_since > 90:
                         raise DramaUpstreamError("上游代理已暂停，请在网站检查项目是否需要补充输入", code="AGENT_INPUT_REQUIRED")
