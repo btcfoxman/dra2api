@@ -1,6 +1,6 @@
 import pytest
 
-from app.task_errors import public_failure_message
+from app.task_errors import public_failure, public_failure_message
 
 
 @pytest.mark.parametrize("code,message,expected", [
@@ -121,3 +121,24 @@ def test_size_detection_does_not_swallow_other_failure_types(message, expected):
 ])
 def test_explicit_moderation_is_not_overridden_by_file_size_advice(code, message, expected):
     assert public_failure_message({"error_code": code, "error_message": message}) == expected
+
+
+@pytest.mark.parametrize("extra,outcome", [
+    ({}, "rejected"),
+    ({"generation_id": "project-1"}, "unknown"),
+    ({"upstream_request": {"submit": {"method": "POST"}}}, "unknown"),
+    ({"upstream_response": {"protocol": {"project_create_started": True}}}, "unknown"),
+    ({"upstream_response": {"protocol": {"failure_outcome": "unknown"}}}, "unknown"),
+    ({"generation_id": "project-1", "raw_status": {"status": "FAILED"}}, "failed"),
+])
+def test_size_classification_does_not_imply_safe_resubmission(extra, outcome):
+    error = public_failure({"error_code": "DRAMA_HTTP_ERROR", "error_message": "File exceeds the 10 MB images limit", **extra})
+    assert error["category"] == "MEDIA_LIMIT_EXCEEDED"
+    assert error["outcome"] == outcome
+    assert error["code"] == "DRAMA_HTTP_ERROR"
+
+
+def test_unknown_http_error_is_not_inferred_to_be_a_rejection():
+    error = public_failure({"error_code": "DRAMA_HTTP_ERROR", "error_message": "Internal server error"})
+    assert error["outcome"] == "unknown"
+    assert error["refunded"] is False

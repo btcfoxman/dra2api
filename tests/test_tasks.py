@@ -161,3 +161,29 @@ def test_media_download_failure_records_reference_and_routes_before_submission(s
     assert failed["upstream_response"]["protocol"]["media_download_error"] == {"reference_index": 2, "kind": "image", "attempts": attempts}
     client.create_project.assert_not_called()
     assert failed["reserved_cost"] == 0
+
+
+@pytest.mark.parametrize("phase,outcome", [("upload_media", "rejected"), ("create_project", "unknown"), ("start_generation", "unknown"), ("generation_detail", "unknown")])
+def test_http_failure_outcome_follows_submission_boundary(service, monkeypatch, phase, outcome):
+    _, task, client = setup_task(service, monkeypatch, image_urls=["https://example.com/one.png"])
+    client.upload_media.return_value = Mock(audit_view=Mock(return_value={}))
+    getattr(client, phase).side_effect = DramaUpstreamError("File exceeds the 10 MB images limit", code="DRAMA_HTTP_ERROR", status_code=400)
+    service._run_task(task["id"])
+    failed = service.db.get_task(task["id"])
+    error = service.public_task(failed)["error"]
+    assert error["outcome"] == outcome
+    assert error["category"] == "MEDIA_LIMIT_EXCEEDED"
+    assert failed["error_message"] == "File exceeds the 10 MB images limit"
+    assert failed["upstream_response"]["protocol"]["failure_outcome"] == outcome
+    if phase == "upload_media":
+        client.create_project.assert_not_called()
+    else:
+        assert failed["upstream_response"]["protocol"]["project_create_started"] is True
+    client.approve.assert_not_called()
+
+
+def test_confirmed_provider_failure_has_terminal_outcome(service, monkeypatch):
+    _, task, client = setup_task(service, monkeypatch)
+    client.generation_detail.return_value = {"status": "FAILED", "job_ref": "job-1", "error_code": "GENERATION_FAILED", "error": "Provider rejected image"}
+    service._run_task(task["id"])
+    assert service.public_task(service.db.get_task(task["id"]))["error"]["outcome"] == "failed"

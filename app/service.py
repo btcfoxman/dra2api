@@ -43,7 +43,7 @@ from app.model_catalog import (
     normalize_generation_request,
     public_models,
 )
-from app.task_errors import public_failure_message
+from app.task_errors import public_failure, public_failure_message
 
 
 LOGGER = logging.getLogger("dra2api.service")
@@ -976,6 +976,10 @@ class DRAService:
         deadline = time.monotonic() + int(self.settings.task_timeout_seconds)
         balance_fresh = False
         preserve_slot = False
+        failure_outcome = "unknown" if (
+            task.get("generation_id") or (task.get("upstream_request") or {}).get("submit")
+            or any(protocol.get(key) for key in ("project_create_started", "prompt_started", "approved_id"))
+        ) else "rejected"
         def save(**changes: Any) -> None:
             self.db.update_task(task_id, upstream_response={"protocol": protocol}, **changes)
         try:
@@ -1003,6 +1007,10 @@ class DRAService:
                 save(upstream_request={"uploads": [item.audit_view() for item in uploads],
                                        "submit": {"method": "POST", "url": client.base + "/api/v1/hosted/create", "body": request}},
                      estimated_cost=client.estimate_cost(payload))
+                # Persist the boundary before a write whose response can be lost.
+                failure_outcome = "unknown"
+                protocol["project_create_started"] = True
+                save()
                 project_id = client.create_project(request)
                 protocol["project_id"] = project_id
                 save(generation_id=project_id, progress=30, status="submitted")
@@ -1094,6 +1102,7 @@ class DRAService:
                     self.db.settle_task_balance(task_id, account_id, actual_cost=cost, balance_snapshot_fresh=balance_fresh)
                     return
                 if detail["status"] == "FAILED":
+                    failure_outcome = "failed"
                     raise DramaUpstreamError(failure_reason(detail), code=str(detail.get("error_code") or "GENERATION_FAILED"), details=detail)
                 if not detail.get("job_ref") and not detail.get("isStreaming") and not approvals:
                     idle_since = idle_since or time.monotonic()
@@ -1105,6 +1114,7 @@ class DRAService:
             raise TimeoutError("Drama.Land generation timed out; the project can be queried again")
         except Exception as exc:
             code = "TASK_TIMEOUT" if isinstance(exc, TimeoutError) else str(getattr(exc, "code", "TASK_FAILED"))
+            protocol["failure_outcome"] = failure_outcome
             save(status="expired" if code == "TASK_TIMEOUT" else "failed", progress=100,
                  error_code=code, error_message=str(exc), completed_at=now_ts())
             if account:
@@ -1196,10 +1206,7 @@ class DRAService:
             ],
         }
         if task.get("status") in {"failed", "expired"}:
-            result["error"] = {
-                "code": task.get("error_code") or "generation_failed",
-                "message": self.public_failure_message(task),
-            }
+            result["error"] = public_failure(task)
         return result
 
     def task_media_source(self, task_id: str, index: int) -> str:

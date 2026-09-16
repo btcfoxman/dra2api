@@ -125,7 +125,8 @@ def test_upstream_image_size_limit_is_normalized_across_task_endpoints(api, serv
     task = service.create_task({"prompt": "A lake"})
     task_id = task["id"]
     service.db.update_task(task_id, status="failed", error_code="DRAMA_HTTP_ERROR", error_message=raw_error)
-    expected = {"code": "DRAMA_HTTP_ERROR", "message": "素材超限，请修改后再试~"}
+    expected = {"code": "DRAMA_HTTP_ERROR", "message": "素材超限，请修改后再试~",
+                "category": "MEDIA_LIMIT_EXCEEDED", "outcome": "rejected", "refunded": False}
     headers = {"Authorization": "Bearer test-api"}
     for path in [f"/v1/videos/{task_id}", f"/api/videos/{task_id}", f"/v1/responses/{task_id}"]:
         assert api.get(path, headers=headers).json()["error"] == expected
