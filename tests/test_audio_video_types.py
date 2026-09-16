@@ -14,7 +14,7 @@ from test_media_download import download_client, response
 @pytest.fixture(scope="module")
 def av_samples(tmp_path_factory):
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-        pytest.skip("real codec tests require ffmpeg and ffprobe")
+        pytest.fail("real codec tests require ffmpeg and ffprobe")
     folder = tmp_path_factory.mktemp("encoded-media")
     samples = {}
     for extension, codec in [("mp3", "libmp3lame"), ("wav", "pcm_s16le"), ("m4a", "aac"),
