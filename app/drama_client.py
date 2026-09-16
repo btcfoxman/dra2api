@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import math
@@ -11,12 +12,14 @@ import shutil
 import subprocess
 import tempfile
 import time
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 
 import requests
+from PIL import Image
 
 from app.config import rewrite_loopback_proxy
 from app.model_catalog import CREDIT_RATES, model_spec
@@ -75,6 +78,7 @@ class MediaUpload:
     duration_ms: int = 0
     width: int = 0
     height: int = 0
+    source_content_type: str = ""
 
     def audit_view(self) -> dict[str, Any]:
         return asdict(self)
@@ -118,6 +122,31 @@ def result_urls(detail: dict[str, Any]) -> list[str]:
 
 def failure_reason(detail: dict[str, Any]) -> str:
     return _message(detail.get("error") or detail.get("error_message") or "Drama.Land 视频生成失败")
+
+
+def image_metadata(data: bytes, declared_type: str, name: str) -> tuple[str, str, int, int]:
+    """Identify the downloaded image without converting or recompressing it."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as image:
+                content_type = Image.MIME.get(image.format, "")
+                width, height = image.size
+                image.verify()
+        if not content_type.startswith("image/"):
+            raise ValueError("unrecognized image format")
+    except (Image.DecompressionBombWarning, Image.DecompressionBombError) as exc:
+        raise DramaUpstreamError("图片像素尺寸超过支持范围", code="MEDIA_LIMIT_EXCEEDED",
+                                 details={"declared_content_type": declared_type, "error_type": type(exc).__name__}) from exc
+    except (OSError, SyntaxError, ValueError, EOFError) as exc:
+        raise DramaUpstreamError("图片内容无法识别或已损坏", code="MEDIA_FORMAT_UNSUPPORTED",
+                                 details={"declared_content_type": declared_type, "error_type": type(exc).__name__}) from exc
+    if mimetypes.guess_type(name)[0] != content_type:
+        extension = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(content_type)
+        extension = extension or mimetypes.guess_extension(content_type)
+        if extension:
+            name = (Path(name).stem if name else "image") + extension
+    return content_type, name, width, height
 
 
 def validate_approval(approval: dict[str, Any], payload: dict[str, Any]) -> float:
@@ -339,12 +368,16 @@ class DramaClient:
             raise ValueError("media must be an HTTP(S) URL or base64 data URL")
         if not data or len(data) > self.settings.media_max_bytes:
             raise ValueError("media is empty or exceeds configured size limit")
-        if not content_type or content_type == "application/octet-stream":
+        source_content_type = content_type.strip().lower()
+        content_type = source_content_type
+        duration_ms, width, height = 0, 0, 0
+        if kind == "image":
+            content_type, name, width, height = image_metadata(data, content_type, name)
+        elif not content_type or content_type == "application/octet-stream":
             content_type = mimetypes.guess_type(name)[0] or ""
         if not content_type.startswith(kind + "/"):
             raise ValueError(f"{kind} reference has incompatible content type")
         name = name or kind + (mimetypes.guess_extension(content_type) or ".bin")
-        duration_ms, width, height = 0, 0, 0
         if kind in {"video", "audio"}:
             executable = shutil.which("ffprobe")
             if not executable:
@@ -367,7 +400,8 @@ class DramaClient:
         signed = self._request("POST", self.base + "/api/v1/upload-url",
                                json={"filename": name, "content_type": content_type, "size_bytes": len(data)})
         self._upload_bytes(signed["upload_url"], data, content_type)
-        return MediaUpload("", signed["public_url"], kind, name, content_type, len(data), duration_ms, width, height)
+        return MediaUpload("", signed["public_url"], kind, name, content_type, len(data), duration_ms, width, height,
+                           source_content_type=source_content_type)
 
     def _upload_bytes(self, url: str, data: bytes, content_type: str) -> None:
         # A signed object PUT can safely resend identical bytes, even when its

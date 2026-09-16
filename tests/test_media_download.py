@@ -5,12 +5,13 @@ import pytest
 import requests
 
 from app.drama_client import DramaClient, DramaUpstreamError
+from media_samples import PNG, PNG_DATA_URL
 
 
 SOURCE = "https://media.example.com/image.png?signature=private"
 
 
-def response(chunks=(b"image-data",), status=200):
+def response(chunks=(PNG,), status=200):
     value = MagicMock(status_code=status, headers={"Content-Type": "image/png; charset=binary"})
     value.__enter__.return_value = value
     value.iter_content.return_value = iter(chunks)
@@ -34,11 +35,11 @@ def test_direct_download_then_upload_uses_account_proxy(settings, monkeypatch):
     direct.get.return_value = response()
     client._request = Mock(return_value={"upload_url": "https://upload.example/signed", "public_url": "https://upload.example/image.png"})
     upload = client.upload_media(SOURCE, "image")
-    assert upload.size == len(b"image-data")
+    assert upload.size == len(PNG)
     assert direct.trust_env is False
     client.session.get.assert_not_called()
     assert client.session.proxies["https"] == "socks5h://proxy.example:1080"
-    assert client.session.put.call_args.kwargs["data"] == b"image-data"
+    assert client.session.put.call_args.kwargs["data"] == PNG
 
 
 @pytest.mark.parametrize("failure", [requests.ConnectTimeout(), requests.exceptions.SSLError(), requests.ConnectionError(), "http403", "partial"])
@@ -93,6 +94,6 @@ def test_size_validation_does_not_retry_via_proxy(settings, monkeypatch):
 def test_base64_does_not_download(settings, monkeypatch):
     client, direct = download_client(settings, monkeypatch)
     client._request = Mock(return_value={"upload_url": "https://upload.example/signed", "public_url": "https://upload.example/image.png"})
-    client.upload_media("data:image/png;base64,aW1hZ2U=", "image")
+    client.upload_media(PNG_DATA_URL, "image")
     direct.get.assert_not_called()
     client.session.get.assert_not_called()

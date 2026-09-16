@@ -5,6 +5,7 @@ import pytest
 import requests
 
 from app.drama_client import DramaClient, DramaUpstreamError
+from media_samples import PNG, PNG_DATA_URL
 from test_tasks import setup_task
 
 
@@ -29,12 +30,12 @@ def test_transient_upload_reuses_same_signed_object_and_bytes(settings, monkeypa
     item = upload_client(settings, monkeypatch)
     first = response(failure) if isinstance(failure, int) else failure
     item.session.put = Mock(side_effect=[first, response(200)])
-    uploaded = item.upload_media("data:image/png;base64,aW1hZ2U=", "image")
+    uploaded = item.upload_media(PNG_DATA_URL, "image")
     assert uploaded.url == "https://media.example/object"
     assert item._request.call_count == 1  # Sign once, do not re-upload earlier refs.
     assert item.session.put.call_count == 2
     assert item.session.put.call_args_list[0] == item.session.put.call_args_list[1]
-    assert item.session.put.call_args.kwargs["data"] == b"image"
+    assert item.session.put.call_args.kwargs["data"] == PNG
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 415])
@@ -42,7 +43,7 @@ def test_permanent_upload_rejection_is_not_retried(settings, monkeypatch, status
     item = upload_client(settings, monkeypatch)
     item.session.put = Mock(return_value=response(status))
     with pytest.raises(DramaUpstreamError) as error:
-        item.upload_media("data:image/png;base64,aW1hZ2U=", "image")
+        item.upload_media(PNG_DATA_URL, "image")
     assert error.value.code == "MEDIA_UPLOAD_FAILED"
     assert len(error.value.details["attempts"]) == 1
     assert item.session.put.call_count == 1
@@ -53,7 +54,7 @@ def test_upload_exhausts_bounded_retry_budget_and_honors_backoff(settings, monke
     item = upload_client(settings, monkeypatch)
     item.session.put = Mock(side_effect=requests.Timeout())
     with pytest.raises(DramaUpstreamError) as error:
-        item.upload_media("data:image/png;base64,aW1hZ2U=", "image")
+        item.upload_media(PNG_DATA_URL, "image")
     assert len(error.value.details["attempts"]) == 3
     assert item.session.put.call_count == 3
     from app.drama_client import time
