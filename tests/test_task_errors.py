@@ -46,3 +46,35 @@ def test_refund_requires_receipt(billing, confirmed):
 
 def test_unknown_refunded_failure():
     assert public_failure_message({"refund_confirmed": True}) == "生成失败，积分已返还，请重试~"
+
+
+@pytest.mark.parametrize("code,message,prefix", [
+    ("GENERATION_FAILED", "OutputVideoSensitiveContentDetected.PolicyViolation: The request failed because the output video may be related to copyright restrictions.", "生成的视频内容违规，请修改描述后重试"),
+    ("GENERATION_FAILED", "OutputAudioSensitiveContentDetected.PolicyViolation: The request failed because the output audio may be related to copyright restrictions.", "生成的视频内容违规，请修改描述后重试"),
+    ("OutputVideoSensitiveContentDetected.PolicyViolation", "", "生成的视频内容违规，请修改描述后重试"),
+    ("OUTPUT_VIDEO_SENSITIVE_CONTENT_DETECTED", "Please change the input image and text prompt.", "生成的视频内容违规，请修改描述后重试"),
+    ("OutputVideoSensitiveContentDetected.PolicyViolation", "Please change the prompt or images of real people.", "生成的视频内容违规，请修改描述后重试"),
+    ("GENERATION_FAILED", "InputImageSensitiveContentDetected: Please change the text prompt.", "检测到图片有敏感或违规内容，请修改后重试"),
+    ("GENERATION_FAILED", "InputTextSensitiveContentDetected: Please use a different video.", "检测到文本有敏感或违规内容，请修改后重试"),
+    ("InputVideoSensitiveContentDetected", "Please change the input image.", "检测到视频有敏感或违规内容，请修改后重试"),
+    ("InputAudioSensitiveContentDetected", "Request rejected", "检测到内容有敏感或违规情况，请修改后重试"),
+    ("GENERATION_FAILED", "All vendors failed: byteplus: Seedance 2.0 could not resolve ARK asset type for asset-example: InvalidParameter.AssetID: Id is Invalid. Retry after the asset is Active or check it with dl asset get.", "参考素材无效或尚未就绪，请稍后重试"),
+    ("InvalidParameter.AssetID", "Id is Invalid", "参考素材无效或尚未就绪，请稍后重试"),
+])
+@pytest.mark.parametrize("refunded", [False, True])
+def test_structured_provider_failures_are_classified_with_confirmed_refund(code, message, prefix, refunded):
+    task = {"error_code": code, "error_message": message, "raw_status": {"billing": {"status": "refunded" if refunded else "refund_pending"}}}
+    expected = prefix + ("，积分已返还~" if refunded else "~")
+    assert public_failure_message(task) == expected
+    assert public_failure_message({"error_code": code, "error_message": message, "refund_confirmed": refunded}) == expected
+
+
+@pytest.mark.parametrize("code,message,expected", [
+    ("GENERATION_FAILED", "Polling timeout", "队列排队服务中断，请稍后再试~"),
+    ("POLLING_TIMEOUT", "", "队列排队服务中断，请稍后再试~"),
+    ("GENERATION_FAILED", "PollingTimeout", "队列排队服务中断，请稍后再试~"),
+    ("CREDIT_LIMIT_EXCEEDED", "上游报价超过 max_credits", "上游报价超过费用上限，请调整后重试~"),
+    ("TASK_TIMEOUT", "Drama.Land generation timed out", "生成失败，请重试~"),
+])
+def test_specific_operational_failures_do_not_become_queue_limits(code, message, expected):
+    assert public_failure_message({"error_code": code, "error_message": message}) == expected

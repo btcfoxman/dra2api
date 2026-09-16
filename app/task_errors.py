@@ -6,9 +6,12 @@ from typing import Any
 
 
 def public_failure_message(task: dict[str, Any]) -> str:
-    code = str(task.get("error_code") or "").upper()
+    raw_code = str(task.get("error_code") or "")
+    code = raw_code.upper()
     message = str(task.get("error_message") or "")
-    text = message.lower()
+    # Providers may put CamelCase error codes inside an otherwise generic message.
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", raw_code + " " + message)
+    text = re.sub(r"[_-]+", " ", text).lower()
     billing = (task.get("raw_status") or {}).get("billing") or {}
     refunded = bool(task.get("refund_confirmed") or billing.get("refunded_at")
                     or billing.get("status") == "refunded")
@@ -16,12 +19,14 @@ def public_failure_message(task: dict[str, Any]) -> str:
     def retry(prefix: str) -> str:
         return prefix + ("，积分已返还~" if refunded else "~")
 
-    if (code in {"REAL_PERSON_DETECTED", "REAL_PERSON_NOT_SUPPORTED", "INPUT_IMAGE_REAL_PERSON"}
-            or re.search(r"real (?:person|people|human)|真人", text)):
+    scope = re.search(r"\b(input|output)\s+(video|audio|image|text)\s+sensitive\s+content\s+detected\b", text)
+    output_moderation = bool(scope and scope.group(1) == "output")
+    if not output_moderation and (code in {"REAL_PERSON_DETECTED", "REAL_PERSON_NOT_SUPPORTED", "INPUT_IMAGE_REAL_PERSON"}
+                                  or re.search(r"real (?:person|people|human)|真人", text)):
         return retry("参考图片中检测到可能存在真人，暂不支持，请更换图片后重试")
 
-    if (code in {"QUEUE_INTERRUPTED", "QUEUE_SERVICE_UNAVAILABLE"}
-            or re.search(r"queue.{0,40}(?:interrupt|unavailable|shutdown)|排队服务中断", text)):
+    if (code in {"QUEUE_INTERRUPTED", "QUEUE_SERVICE_UNAVAILABLE", "POLLING_TIMEOUT"}
+            or re.search(r"queue.{0,40}(?:interrupt|unavailable|shutdown)|\bpoll(?:ing)?\s+(?:timeout|timed?\s*out)\b|排队服务中断", text)):
         return "队列排队服务中断，请稍后再试~"
     if (code in {"RATE_LIMITED", "QUEUE_FULL", "QUEUE_LIMIT_EXCEEDED", "UPSTREAM_QUEUE_LIMIT",
                  "CONCURRENCY_LIMIT_EXCEEDED", "TOO_MANY_PENDING_TASKS"}
@@ -42,12 +47,26 @@ def public_failure_message(task: dict[str, Any]) -> str:
     if (code == "MEDIA_EXTERNAL_URL_REQUIRED"
             or "media must be an http(s) url" in text or "素材仅支持外链" in text):
         return "素材仅支持外链，暂不支持文件流、Base64等~"
+    if (code in {"INVALID_ASSET_ID", "ASSET_NOT_READY"}
+            or re.search(r"invalid\s*parameter[.\s]+asset\s*id|could not resolve ark asset type|asset.{0,30}not (?:active|ready)", text)):
+        return retry("参考素材无效或尚未就绪，请稍后重试")
+    if code == "CREDIT_LIMIT_EXCEEDED":
+        return "上游报价超过费用上限，请调整后重试~"
 
     moderation = ("MODERATION" in code or re.search(
-        r"moderation|flagged|violates? safety|safety rules|nsfw|违规|敏感", text
+        r"moderation|flagged|violates? safety|safety rules|sensitive\s*content\s*detected"
+        r"|policy[.\s]*violation|copyright\s+(?:restrictions?|violation)|nsfw|违规|敏感", text
     ))
     if moderation:
-        if re.search(r"(?:generated|output) video|生成的视频", text):
+        if scope:
+            direction, kind = scope.groups()
+            if direction == "output" and kind in {"video", "audio"}:
+                return retry("生成的视频内容违规，请修改描述后重试")
+            subject = {"text": "文本", "image": "图片", "video": "视频"}.get(kind)
+            if subject:
+                return retry(f"检测到{subject}有敏感或违规内容，请修改后重试")
+            return retry("检测到内容有敏感或违规情况，请修改后重试")
+        if re.search(r"(?:generated|output) (?:video|audio)|生成的视频", text):
             return retry("生成的视频内容违规，请修改描述后重试")
         if "TEXT" in code or re.search(r"\b(?:text|prompt)\b|文本|文字", text):
             return retry("检测到文本有敏感或违规内容，请修改后重试")

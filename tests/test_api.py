@@ -96,13 +96,17 @@ def test_html_uses_versioned_assets_to_avoid_stale_cdn_content(api, path):
 
 
 @pytest.mark.parametrize("billing,refund_suffix", [({}, "~"), ({"status": "refunded"}, "，积分已返还~")])
-def test_admin_and_public_error_messages_match_without_overwriting_audit(api, service, billing, refund_suffix):
-    raw_error = "Content moderation rejected: input image was flagged as containing a real person"
+@pytest.mark.parametrize("raw_error,prefix", [
+    ("Content moderation rejected: input image was flagged as containing a real person", "参考图片中检测到可能存在真人，暂不支持，请更换图片后重试"),
+    ("OutputVideoSensitiveContentDetected.PolicyViolation: The request failed because the output video may be related to copyright restrictions.", "生成的视频内容违规，请修改描述后重试"),
+    ("OutputAudioSensitiveContentDetected.PolicyViolation: Please modify the prompt.", "生成的视频内容违规，请修改描述后重试"),
+])
+def test_admin_and_public_error_messages_match_without_overwriting_audit(api, service, billing, refund_suffix, raw_error, prefix):
     task = service.create_task({"prompt": "A lake"})
     task_id = task["id"]
     service.db.update_task(task_id, status="failed", error_code="GENERATION_FAILED", error_message=raw_error,
                            raw_status={"billing": billing})
-    expected = "参考图片中检测到可能存在真人，暂不支持，请更换图片后重试" + refund_suffix
+    expected = prefix + refund_suffix
     headers = {"Authorization": "Bearer test-api"}
     for path in [f"/v1/videos/{task_id}", f"/api/videos/{task_id}", f"/v1/responses/{task_id}"]:
         assert api.get(path, headers=headers).json()["error"]["message"] == expected
