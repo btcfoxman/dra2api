@@ -118,3 +118,21 @@ def test_admin_and_public_error_messages_match_without_overwriting_audit(api, se
     summary = next(item for item in api.get("/api/tasks").json() if item["id"] == task_id)
     assert summary["public_error_message"] == expected
     assert "raw_status" not in summary
+
+
+def test_upstream_image_size_limit_is_normalized_across_task_endpoints(api, service):
+    raw_error = "File exceeds the 10 MB images limit"
+    task = service.create_task({"prompt": "A lake"})
+    task_id = task["id"]
+    service.db.update_task(task_id, status="failed", error_code="DRAMA_HTTP_ERROR", error_message=raw_error)
+    expected = {"code": "DRAMA_HTTP_ERROR", "message": "素材超限，请修改后再试~"}
+    headers = {"Authorization": "Bearer test-api"}
+    for path in [f"/v1/videos/{task_id}", f"/api/videos/{task_id}", f"/v1/responses/{task_id}"]:
+        assert api.get(path, headers=headers).json()["error"] == expected
+    assert api.get(f"/api/v3/contents/generations/tasks/{task_id}", headers=headers).json()["data"]["error"] == expected
+    api.post("/login", data={"token": "test-admin"}, follow_redirects=False)
+    detail = api.get(f"/api/tasks/{task_id}").json()
+    assert detail["error_message"] == raw_error
+    assert detail["public_error_message"] == expected["message"]
+    summary = next(item for item in api.get("/api/tasks").json() if item["id"] == task_id)
+    assert summary["public_error_message"] == expected["message"]

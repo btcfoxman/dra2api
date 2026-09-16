@@ -31,6 +31,8 @@
 
 `InvalidParameter.AssetID`、ARK 素材类型无法解析或素材未 Active 归入素材无效/未就绪，不误报成文件下载失败或文件格式错误。未知原因继续使用通用失败提示；只补充有错误证据支持的分类。
 
+文件大小错误如 `File exceeds the 10 MB images limit`、`Image is too large`、`FileSizeExceeded` 统一归入素材超限，即使外层错误代码为 `DRAMA_HTTP_ERROR` 或 `PROVIDER_INVALID_REQUEST`。识别不同数值以及 MB、MiB、GB、bytes 等单位，不硬编码 10 MB；文件大小分类要求存在素材对象和大小超限证据，避免把队列、时长或 token 限制误归为素材大小问题。该规则只影响返回文案，不更改素材大小限制或自动压缩图片。
+
 ## 素材下载
 
 1. 新建不读取环境代理的直连会话，完整下载素材。

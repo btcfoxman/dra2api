@@ -5,6 +5,24 @@ import re
 from typing import Any
 
 
+def _is_media_size_failure(text: str) -> bool:
+    subject = r"(?:files?|images?|videos?|audio|media|attachments?|uploads?)"
+    if not re.search(rf"\b{subject}\b", text):
+        return False
+    if re.search(rf"\b{subject}(?:\s+files?)?\s+(?:(?:is|are|was|were)\s+)?too large\b", text):
+        return True
+    size = re.search(
+        rf"\b{subject}\s+sizes?\b|\b\d+(?:\.\d+)?\s*(?:[kmgt]i?\s*b|(?:kilo|mega|giga|tera)?bytes?)\b",
+        text,
+    )
+    violation = re.search(
+        r"\bexceed(?:s|ed)?\b|\btoo large\b|\blarger than\b|\bmust (?:not exceed|be (?:less|smaller) than)\b"
+        r"|\b(?:max(?:imum)?\s+(?:allowed\s+)?(?:file\s+)?size|size\s+limit)\b",
+        text,
+    )
+    return bool(size and violation)
+
+
 def public_failure_message(task: dict[str, Any]) -> str:
     raw_code = str(task.get("error_code") or "")
     code = raw_code.upper()
@@ -39,6 +57,7 @@ def public_failure_message(task: dict[str, Any]) -> str:
             or re.search(r"duration\s+must\s+be\s+between|(?:reference|audio/video) duration exceeds|invalid media duration|素材时长", text)):
         return "素材时长不支持，请修改后再试~"
     if (code in {"MEDIA_LIMIT_EXCEEDED", "MEDIA_TOO_LARGE"}
+            or (not scope and "MODERATION" not in code and _is_media_size_failure(text))
             or re.search(r"media (?:exceeds|is empty or exceeds).*size limit|too many (?:images|videos|audio|references)"
                          r"|at most \d+ (?:images|videos|audio|references)|素材超限", text)):
         return "素材超限，请修改后再试~"

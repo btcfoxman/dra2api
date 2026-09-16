@@ -78,3 +78,46 @@ def test_structured_provider_failures_are_classified_with_confirmed_refund(code,
 ])
 def test_specific_operational_failures_do_not_become_queue_limits(code, message, expected):
     assert public_failure_message({"error_code": code, "error_message": message}) == expected
+
+
+@pytest.mark.parametrize("message", [
+    "File exceeds the 10 MB images limit",
+    "File exceeds the 100 MB videos limit",
+    "File exceeds the 20MB audio limit",
+    "The image file size of 12.5 MB exceeds the maximum size of 10 MB",
+    "Image size must be less than 10 MiB",
+    "Video file size must not exceed 1.5 GB",
+    "Maximum allowed file size is 10485760 bytes",
+    "Image is too large",
+    "FileTooLarge",
+    "ImageFileTooLarge",
+    "FileSizeExceeded",
+    "Image files are too large",
+    "Upload exceeds 10 megabytes",
+    "All vendors failed: File exceeds the 10 MB images limit",
+])
+@pytest.mark.parametrize("code", ["DRAMA_HTTP_ERROR", "PROVIDER_INVALID_REQUEST"])
+def test_provider_file_size_limits_have_specific_message(code, message):
+    task = {"error_code": code, "error_message": message}
+    assert public_failure_message(task) == "素材超限，请修改后再试~"
+    assert public_failure_message({**task, "refund_confirmed": True}) == "素材超限，请修改后再试~"
+
+
+@pytest.mark.parametrize("message,expected", [
+    ("File upload queue limit exceeded", "上游队列排队限额，请稍后再试~"),
+    ("Video duration must be between 2s and 15s", "素材时长不支持，请修改后再试~"),
+    ("Prompt token limit exceeded", "生成失败，请重试~"),
+    ("Account storage quota exceeded (10 GB)", "生成失败，请重试~"),
+    ("Image reference has incompatible content type", "素材格式不支持，请修改后再试~"),
+    ("Unable to download image; the documented file limit is 10 MB", "生成失败，请重试~"),
+])
+def test_size_detection_does_not_swallow_other_failure_types(message, expected):
+    assert public_failure_message({"error_code": "GENERATION_FAILED", "error_message": message}) == expected
+
+
+@pytest.mark.parametrize("code,message,expected", [
+    ("IMAGE_MODERATION_FAILED", "Please replace the image. Maximum allowed file size is 10 MB.", "检测到图片有敏感或违规内容，请修改后重试~"),
+    ("GENERATION_FAILED", "OutputVideoSensitiveContentDetected.PolicyViolation: Please replace the input image (maximum file size 10 MB).", "生成的视频内容违规，请修改描述后重试~"),
+])
+def test_explicit_moderation_is_not_overridden_by_file_size_advice(code, message, expected):
+    assert public_failure_message({"error_code": code, "error_message": message}) == expected
