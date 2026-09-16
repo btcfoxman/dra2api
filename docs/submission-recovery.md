@@ -25,6 +25,10 @@ Drama.Land 的报价批准不等于视频已经提交。2026-09-16 的实际操�
 
 缺失、通用或错误的响应头不会阻止有效图片上传。无法识别的图片、损坏文件、HTML/JSON 错误响应在签名前拒绝，返回 `MEDIA_FORMAT_UNSUPPORTED`；任务审计的 `media_validation_error` 记录素材序号、原始响应类型和异常类型。成功上传的审计字段 `source_content_type` 保留源站声明类型，`content_type` 保存实际上传类型。
 
+音频和视频先由 `ffprobe` 读取已下载文件的实际容器和流，再确定 MIME、文件名和时长。源站返回 `application/octet-stream` 或使用 `audio-1`、`video-1` 等无后缀展示名时，也能识别有效素材。例如 MP3 按 `audio/mpeg` 上传，音频 MP4/M4A 按 `audio/mp4` 上传；原文件不转码、不裁剪。MP3/M4A 中的封面图片不算视频流；含实际视频画面的文件不能直接伪装为音频引用。
+
+音视频检测仅访问下载后的临时文件，拒绝播放列表或外部流引用。未识别的容器、错误页、损坏文件和类型不匹配返回 `MEDIA_FORMAT_UNSUPPORTED`；无有效时长返回 `MEDIA_DURATION_UNSUPPORTED`。模型对参考音视频总时长的限制继续使用检测到的真实时长校验。
+
 素材下载完成后，以签名 URL 执行对象存储 `PUT`。遇到连接异常、超时、HTTP 408/425/429 或 5xx 时，使用相同签名 URL 和相同字节重试，不重复下载素材、不重新申请签名，也不创建视频任务。
 
 - 重试次数沿用 `DRA_REQUEST_RETRIES`，默认重试两次，即总计三次尝试。

@@ -1016,7 +1016,7 @@ class DRAService:
                         if exc.code in {"MEDIA_DOWNLOAD_FAILED", "MEDIA_UPLOAD_FAILED"}:
                             key = "media_download_error" if exc.code == "MEDIA_DOWNLOAD_FAILED" else "media_upload_error"
                             protocol[key] = {"reference_index": index + 1, "kind": kind, **(exc.details or {})}
-                        elif exc.code in {"MEDIA_FORMAT_UNSUPPORTED", "MEDIA_LIMIT_EXCEEDED"}:
+                        elif exc.code in {"MEDIA_FORMAT_UNSUPPORTED", "MEDIA_LIMIT_EXCEEDED", "MEDIA_DURATION_UNSUPPORTED"}:
                             protocol["media_validation_error"] = {"reference_index": index + 1, "kind": kind, **(exc.details or {})}
                         raise
                     save(progress=5 + int(20 * (index + 1) / max(len(sources), 1)))

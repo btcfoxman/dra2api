@@ -149,6 +149,70 @@ def image_metadata(data: bytes, declared_type: str, name: str) -> tuple[str, str
     return content_type, name, width, height
 
 
+def audio_video_metadata(data: bytes, kind: str, declared_type: str, name: str) -> tuple[str, str, int, int, int]:
+    """Probe actual streams before considering HTTP headers or display names."""
+    executable = shutil.which("ffprobe")
+    if not executable:
+        raise DramaUpstreamError("音视频检测工具不可用", code="MEDIA_PROBE_UNAVAILABLE")
+    supported_formats = "mp3,wav,flac,aac,ogg,amr,aiff,mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpeg,mpegts,flv,asf"
+    diagnostic: dict[str, Any] = {"declared_content_type": declared_type, "requested_kind": kind}
+    with tempfile.TemporaryDirectory(prefix="dra-media-") as directory:
+        path = Path(directory) / "reference.bin"
+        path.write_bytes(data)
+        try:
+            result = subprocess.run(
+                [executable, "-v", "error", "-protocol_whitelist", "file,pipe",
+                 "-format_whitelist", supported_formats, "-show_format", "-show_streams", "-of", "json", str(path)],
+                capture_output=True, timeout=30, check=True)
+            metadata = json.loads(result.stdout)
+            container = metadata.get("format") or {}
+            formats = set(str(container.get("format_name") or "").split(","))
+            streams = metadata.get("streams") or []
+            # MP3/M4A album art is an attached picture, not a video reference.
+            videos = [item for item in streams if item.get("codec_type") == "video"
+                      and not (item.get("disposition") or {}).get("attached_pic")]
+            audio = [item for item in streams if item.get("codec_type") == "audio"]
+            diagnostic.update(detected_format=container.get("format_name"),
+                              stream_types=sorted({str(item.get("codec_type")) for item in streams}))
+            selected = audio if kind == "audio" else videos
+            if not selected or (kind == "audio" and videos):
+                raise ValueError("requested reference kind does not match actual streams")
+            duration = float(container.get("duration", 0))
+            if not math.isfinite(duration) or duration <= 0 or round(duration * 1000) <= 0:
+                raise DramaUpstreamError("素材时长无法识别", code="MEDIA_DURATION_UNSUPPORTED", details=diagnostic)
+            width, height = (int(selected[0].get("width", 0)), int(selected[0].get("height", 0))) if kind == "video" else (0, 0)
+            if kind == "video" and (width <= 0 or height <= 0):
+                raise ValueError("invalid video dimensions")
+            if "mov" in formats or "mp4" in formats:
+                quicktime = str((container.get("tags") or {}).get("major_brand", "")).strip() == "qt"
+                mime, extension = (("audio/mp4", ".m4a") if kind == "audio" else
+                                   ("video/quicktime", ".mov") if quicktime else ("video/mp4", ".mp4"))
+            elif "matroska" in formats or "webm" in formats:
+                webm = b"\x42\x82\x84webm" in data[:4096]
+                mime = kind + ("/webm" if webm else "/x-matroska")
+                extension = ".webm" if webm else ".mka" if kind == "audio" else ".mkv"
+            elif "ogg" in formats:
+                mime, extension = ("audio/ogg", ".ogg") if kind == "audio" else ("video/ogg", ".ogv")
+            elif "asf" in formats:
+                mime, extension = ("audio/x-ms-wma", ".wma") if kind == "audio" else ("video/x-ms-asf", ".asf")
+            else:
+                types = {"mp3": ("audio/mpeg", ".mp3"), "wav": ("audio/wav", ".wav"),
+                         "flac": ("audio/flac", ".flac"), "aac": ("audio/aac", ".aac"),
+                         "amr": ("audio/amr", ".amr"), "aiff": ("audio/aiff", ".aiff"),
+                         "avi": ("video/x-msvideo", ".avi"), "mpeg": ("video/mpeg", ".mpg"),
+                         "mpegts": ("video/mp2t", ".ts"), "flv": ("video/x-flv", ".flv")}
+                mime, extension = next((types[value] for value in sorted(formats) if value in types), ("", ""))
+            if not mime.startswith(kind + "/"):
+                raise ValueError("unsupported media container")
+        except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError) as exc:
+            diagnostic["error_type"] = type(exc).__name__
+            raise DramaUpstreamError("素材内容无法识别、已损坏或类型不匹配", code="MEDIA_FORMAT_UNSUPPORTED",
+                                     details=diagnostic) from exc
+    if mimetypes.guess_type(name)[0] != mime:
+        name = (Path(name).stem if name else kind) + extension
+    return mime, name, round(duration * 1000), width, height
+
+
 def validate_approval(approval: dict[str, Any], payload: dict[str, Any]) -> float:
     """Approve only one requested video expense, with matching parameters."""
     quotation = approval.get("quote") or {}
@@ -373,30 +437,13 @@ class DramaClient:
         duration_ms, width, height = 0, 0, 0
         if kind == "image":
             content_type, name, width, height = image_metadata(data, content_type, name)
+        elif kind in {"audio", "video"}:
+            content_type, name, duration_ms, width, height = audio_video_metadata(data, kind, content_type, name)
         elif not content_type or content_type == "application/octet-stream":
             content_type = mimetypes.guess_type(name)[0] or ""
         if not content_type.startswith(kind + "/"):
             raise ValueError(f"{kind} reference has incompatible content type")
         name = name or kind + (mimetypes.guess_extension(content_type) or ".bin")
-        if kind in {"video", "audio"}:
-            executable = shutil.which("ffprobe")
-            if not executable:
-                raise ValueError("ffprobe is required for audio/video reference validation")
-            with tempfile.TemporaryDirectory(prefix="dra-media-") as directory:
-                path = Path(directory) / ("reference" + (mimetypes.guess_extension(content_type) or ".bin"))
-                path.write_bytes(data)
-                try:
-                    result = subprocess.run([executable, "-v", "error", "-show_format", "-show_streams", "-of", "json", str(path)],
-                                            capture_output=True, timeout=30, check=True)
-                    metadata = json.loads(result.stdout)
-                    duration = float(metadata.get("format", {}).get("duration", 0))
-                    streams = [item for item in metadata.get("streams", []) if item.get("codec_type") == kind]
-                    if not streams or not math.isfinite(duration) or duration <= 0:
-                        raise ValueError("invalid media duration or stream type")
-                    duration_ms = round(duration * 1000)
-                    width, height = int(streams[0].get("width", 0)), int(streams[0].get("height", 0))
-                except (subprocess.SubprocessError, ValueError, KeyError) as exc:
-                    raise ValueError("reference file could not be decoded") from exc
         signed = self._request("POST", self.base + "/api/v1/upload-url",
                                json={"filename": name, "content_type": content_type, "size_bytes": len(data)})
         self._upload_bytes(signed["upload_url"], data, content_type)
