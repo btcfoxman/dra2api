@@ -93,3 +93,24 @@ def test_html_uses_versioned_assets_to_avoid_stale_cdn_content(api, path):
     assert all("?v=" in asset for asset in assets)
     for asset in assets:
         assert api.get(asset).status_code == 200
+
+
+@pytest.mark.parametrize("billing,refund_suffix", [({}, "~"), ({"status": "refunded"}, "，积分已返还~")])
+def test_admin_and_public_error_messages_match_without_overwriting_audit(api, service, billing, refund_suffix):
+    raw_error = "Content moderation rejected: input image was flagged as containing a real person"
+    task = service.create_task({"prompt": "A lake"})
+    task_id = task["id"]
+    service.db.update_task(task_id, status="failed", error_code="GENERATION_FAILED", error_message=raw_error,
+                           raw_status={"billing": billing})
+    expected = "参考图片中检测到可能存在真人，暂不支持，请更换图片后重试" + refund_suffix
+    headers = {"Authorization": "Bearer test-api"}
+    for path in [f"/v1/videos/{task_id}", f"/api/videos/{task_id}", f"/v1/responses/{task_id}"]:
+        assert api.get(path, headers=headers).json()["error"]["message"] == expected
+    assert api.get(f"/api/v3/contents/generations/tasks/{task_id}", headers=headers).json()["data"]["error"]["message"] == expected
+    api.post("/login", data={"token": "test-admin"}, follow_redirects=False)
+    detail = api.get(f"/api/tasks/{task_id}").json()
+    assert detail["public_error_message"] == expected
+    assert detail["error_message"] == raw_error
+    summary = next(item for item in api.get("/api/tasks").json() if item["id"] == task_id)
+    assert summary["public_error_message"] == expected
+    assert "raw_status" not in summary

@@ -397,7 +397,7 @@ def model_costs(limit: int = Query(200, ge=1, le=1000)) -> list[dict[str, Any]]:
 
 @app.get("/api/tasks", dependencies=[Depends(_admin_token)])
 def tasks(limit: int = Query(20, ge=1, le=100)) -> list[dict[str, Any]]:
-    return database.list_task_summaries(limit)
+    return [service.admin_task(task) for task in database.list_task_summaries(limit)]
 
 
 @app.post("/api/tasks", dependencies=[Depends(_admin_token)])
@@ -412,7 +412,7 @@ def clear_tasks() -> dict[str, Any]:
 
 @app.get("/api/tasks/{task_id}", dependencies=[Depends(_admin_token)])
 def task_detail(task_id: str) -> dict[str, Any]:
-    return _task_or_404(task_id)
+    return service.admin_task(_task_or_404(task_id))
 
 
 @app.post("/api/tasks/{task_id}/retry", dependencies=[Depends(_admin_token)])

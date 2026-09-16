@@ -7,11 +7,11 @@ from app.model_catalog import normalize_generation_request
 from test_protocol import approval
 
 
-def setup_task(service, monkeypatch):
+def setup_task(service, monkeypatch, **request_values):
     monkeypatch.setattr(service, "_schedule", lambda _: None)
     account = service.db.upsert_account({"name": "test", "status": "active", "last_balance": 1000,
                                          "email": "test@example.com", "user_id": "owner", "access_token": "token", "refresh_token": "refresh"})
-    task = service.create_task({"prompt": "A lake at sunrise", "max_credits": 225})
+    task = service.create_task({"prompt": "A lake at sunrise", "max_credits": 225, **request_values})
     client = Mock(base="https://example.com")
     client.account_state.return_value = {"available_balance": 1000, "user_id": "owner", "email": "test@example.com"}
     client.build_generation_request.return_value = {"project_type": "video"}
@@ -147,3 +147,17 @@ def test_blocked_accounts_are_removed_from_dispatch(service, monkeypatch, error,
     assert service.db.available_account_count() == 0
     assert service.db.get_account(account["id"])["active_tasks"] == 0
     assert client.account_state.call_count == 1
+
+
+def test_media_download_failure_records_reference_and_routes_before_submission(service, monkeypatch):
+    _, task, client = setup_task(service, monkeypatch,
+                                 image_urls=["https://example.com/one.png", "https://example.com/two.png"])
+    attempts = [{"route": "direct", "source_host": "example.com", "error_type": "ReadTimeout", "status_code": None},
+                {"route": "account_proxy", "source_host": "example.com", "error_type": "HTTPError", "status_code": 403}]
+    client.upload_media.side_effect = [Mock(), DramaUpstreamError("failed", code="MEDIA_DOWNLOAD_FAILED", details={"attempts": attempts})]
+    service._run_task(task["id"])
+    failed = service.db.get_task(task["id"])
+    assert failed["status"] == "failed"
+    assert failed["upstream_response"]["protocol"]["media_download_error"] == {"reference_index": 2, "kind": "image", "attempts": attempts}
+    client.create_project.assert_not_called()
+    assert failed["reserved_cost"] == 0

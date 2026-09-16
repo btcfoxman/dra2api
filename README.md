@@ -88,6 +88,10 @@ curl "$BASE_URL/v1/videos/TASK_ID" -H "Authorization: Bearer $DRA_API_KEY"
 
 参考素材使用 `image_urls`、`video_urls`、`audio_urls`，也支持 `content` / Responses 格式的多模态输入。一次请求只接受 `n=1`。使用 `resolution` + `aspect_ratio`；未确认的 `seed`、`fps`、自定义 `width` / `height` / `size` 会被拒绝。
 
+HTTP(S) 素材先由服务直连下载；遇到网络、HTTP 或传输中断错误时，再使用该账号配置的代理下载一次。登录、素材上传和生成请求继续使用账号代理。素材大小与格式校验失败不会触发代理重试；Base64 输入仍可使用。
+
+任务失败时，对外 API 与管理端共用分类文案，区分真人图片审核、文本/图片/视频审核、队列限额及素材问题。`error.code` 和管理端原始错误保留；只有任务上游账单明确标记退款完成时，提示才包含“积分已返还”。参见[错误返回规则](docs/error-messages.md)。
+
 `generate_audio` 与 `negative_prompt` 通过项目生成指令传递，报价没有逐项确认字段，不能保证供应商严格执行。网关能校验模型、时长、分辨率，并在报价提供比例时校验比例。
 
 Fast 实测请求 `generate_audio:false` 仍返回非静音音轨，当前不能据此参数保证静音。该次文件为 496×864、约 4.10 秒；分辨率和比例是上游档位，输出存在编码对齐和时长取整。

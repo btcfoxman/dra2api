@@ -1296,6 +1296,9 @@ class Database:
                     tasks.thumbnail_url, tasks.error_code, tasks.error_message,
                     tasks.created_at, tasks.updated_at, tasks.completed_at,
                     tasks.estimated_cost, tasks.actual_cost,
+                    COALESCE(json_extract(tasks.raw_status_json, '$.billing.refunded_at'), '') != ''
+                        OR COALESCE(json_extract(tasks.raw_status_json, '$.billing.status'), '') = 'refunded'
+                        AS refund_confirmed,
                     accounts.name AS account_name,
                     json_extract(tasks.request_json, '$.width') AS request_width,
                     json_extract(tasks.request_json, '$.height') AS request_height,

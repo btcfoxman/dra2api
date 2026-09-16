@@ -43,35 +43,11 @@ from app.model_catalog import (
     normalize_generation_request,
     public_models,
 )
+from app.task_errors import public_failure_message
 
 
 LOGGER = logging.getLogger("dra2api.service")
 TERMINAL_STATUSES = {"succeeded", "failed", "expired"}
-PUBLIC_FAILURE = "生成未完成，请根据错误代码检查任务详情"
-PUBLIC_MEDIA_FAILURE = "素材下载失败，请检查~"
-PUBLIC_MEDIA_DURATION_FAILURE = "素材时长不支持，请修改后再试"
-PUBLIC_FORMAT_FAILURE = "处理失败，请检查图音视频格式和大小"
-PUBLIC_MODERATION_FAILURE = "内容未通过上游审核，请修改后重试"
-
-
-def _is_moderation_failure(message: Any) -> bool:
-    value = str(message or "").lower()
-    return any(
-        marker in value
-        for marker in (
-            "content was flagged by our moderation system",
-            "content violates safety rules",
-        )
-    )
-
-
-def _is_image_constraint_failure(message: Any) -> bool:
-    value = str(message or "").lower()
-    return (
-        "height" in value and "300" in value and "6000" in value
-    ) or (
-        "aspect ratio" in value and "0.4" in value and "2.5" in value
-    )
 
 
 class _DynamicSlots:
@@ -1015,7 +991,13 @@ class DRAService:
                 uploads = []
                 save(status="preparing", channel="draapi", progress=5)
                 for index, (kind, item) in enumerate(sources):
-                    uploads.append(client.upload_media(str(item["value"]), kind, str(item.get("name") or f"{kind}{index + 1}")))
+                    try:
+                        uploads.append(client.upload_media(str(item["value"]), kind, str(item.get("name") or f"{kind}{index + 1}")))
+                    except DramaUpstreamError as exc:
+                        if exc.code == "MEDIA_DOWNLOAD_FAILED":
+                            protocol["media_download_error"] = {"reference_index": index + 1, "kind": kind,
+                                                                **(exc.details or {})}
+                        raise
                     save(progress=5 + int(20 * (index + 1) / max(len(sources), 1)))
                 request = client.build_generation_request(payload, uploads)
                 save(upstream_request={"uploads": [item.audit_view() for item in uploads],
@@ -1192,22 +1174,11 @@ class DRAService:
 
     @staticmethod
     def public_failure_message(task: dict[str, Any]) -> str:
-        code = str(task.get("error_code") or "")
-        if code == "CONTENT_MODERATION_FAILED" or _is_moderation_failure(
-            task.get("error_message")
-        ):
-            return PUBLIC_MODERATION_FAILURE
-        if re.search(
-            r"\bduration\s+must\s+be\s+between\s+\d+(?:\.\d+)?\s*s\s+and\s+\d+(?:\.\d+)?\s*s\b",
-            str(task.get("error_message") or ""),
-            re.I,
-        ):
-            return PUBLIC_MEDIA_DURATION_FAILURE
-        if code == "MEDIA_DOWNLOAD_FAILED":
-            return PUBLIC_MEDIA_FAILURE
-        if code == "PROVIDER_INVALID_REQUEST":
-            return PUBLIC_FORMAT_FAILURE
-        return PUBLIC_FAILURE
+        return public_failure_message(task)
+
+    def admin_task(self, task: dict[str, Any]) -> dict[str, Any]:
+        return {**task, "public_error_message": self.public_failure_message(task)
+                if task.get("status") in {"failed", "expired"} else ""}
 
     def public_task(self, task: dict[str, Any]) -> dict[str, Any]:
         result = {

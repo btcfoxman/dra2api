@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import math
 import mimetypes
 import re
@@ -19,6 +20,9 @@ import requests
 
 from app.config import rewrite_loopback_proxy
 from app.model_catalog import CREDIT_RATES, model_spec
+
+
+LOGGER = logging.getLogger("dra2api.drama_client")
 
 
 class DramaUpstreamError(RuntimeError):
@@ -288,6 +292,38 @@ class DramaClient:
         result = self._request("POST", self.base + "/api/v1/task/claim", json={"task_id": "daily_login"})
         return {"credits": (result.get("data") or {}).get("reward_amount", 0), "today_signed": True}
 
+    def _download_media(self, source: str) -> tuple[bytes, str]:
+        attempts = []
+        with requests.Session() as direct:
+            direct.trust_env = False
+            direct.headers["User-Agent"] = self.session.headers["User-Agent"]
+            routes = [("direct", direct)]
+            if self.session.proxies:
+                routes.append(("account_proxy", self.session))
+            for route, session in routes:
+                try:
+                    with session.get(source, stream=True, timeout=self.settings.media_timeout_seconds) as response:
+                        response.raise_for_status()
+                        content_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+                        chunks, size = [], 0
+                        for chunk in response.iter_content(65536):
+                            size += len(chunk)
+                            if size > self.settings.media_max_bytes:
+                                raise ValueError("media exceeds configured size limit")
+                            chunks.append(chunk)
+                        return b"".join(chunks), content_type
+                except requests.RequestException as exc:
+                    attempt = {"route": route, "source_host": urlsplit(source).hostname,
+                               "error_type": type(exc).__name__,
+                               "status_code": exc.response.status_code if exc.response is not None else None}
+                    attempts.append(attempt)
+                    LOGGER.warning("Media download failed: route=%s host=%s error=%s status=%s",
+                                   route, attempt["source_host"], attempt["error_type"], attempt["status_code"])
+                    if route == routes[-1][0]:
+                        raise DramaUpstreamError("素材下载失败", code="MEDIA_DOWNLOAD_FAILED",
+                                                 details={"attempts": attempts}) from exc
+        raise AssertionError("media download has no route")
+
     def upload_media(self, source: str, kind: str, name: str = "") -> MediaUpload:
         content_type = ""
         if source.startswith("data:"):
@@ -297,20 +333,8 @@ class DramaClient:
             content_type = header[5:].split(";", 1)[0]
             data = base64.b64decode(encoded, validate=True)
         elif urlsplit(source).scheme in {"https", "http"}:
-            try:
-                with self.session.get(source, stream=True, timeout=self.settings.media_timeout_seconds) as response:
-                    response.raise_for_status()
-                    content_type = response.headers.get("Content-Type", "").split(";", 1)[0]
-                    chunks, size = [], 0
-                    for chunk in response.iter_content(65536):
-                        size += len(chunk)
-                        if size > self.settings.media_max_bytes:
-                            raise ValueError("media exceeds configured size limit")
-                        chunks.append(chunk)
-                    data = b"".join(chunks)
-                name = name or urlsplit(source).path.rsplit("/", 1)[-1]
-            except requests.RequestException as exc:
-                raise DramaUpstreamError("素材下载失败", code="MEDIA_DOWNLOAD_FAILED") from exc
+            data, content_type = self._download_media(source)
+            name = name or urlsplit(source).path.rsplit("/", 1)[-1]
         else:
             raise ValueError("media must be an HTTP(S) URL or base64 data URL")
         if not data or len(data) > self.settings.media_max_bytes:
