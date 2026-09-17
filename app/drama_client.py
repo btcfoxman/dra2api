@@ -373,8 +373,33 @@ class DramaClient:
                 "available_balance": summary.get("credits", user.get("points", 0)), "plan": user.get("tier", ""),
                 "buckets": {**summary, "features": user.get("features", {}), "subscription_status": user.get("subscription_status")}}
 
+    def reward_tasks(self) -> list[dict[str, Any]]:
+        result = self._request("GET", self.base + "/api/v1/task/list")
+        data = result.get("data") if isinstance(result, dict) else None
+        tasks = data.get("tasks") if isinstance(data, dict) else None
+        if not isinstance(tasks, list) or not all(isinstance(item, dict) and item.get("id") for item in tasks):
+            raise DramaUpstreamError("上游奖励任务列表格式异常", code="INVALID_REWARD_TASKS")
+        return tasks
+
+    def claim_reward(self, task_id: str) -> dict[str, Any]:
+        try:
+            result = self._request("POST", self.base + "/api/v1/task/claim", json={"task_id": task_id})
+        except DramaUpstreamError as exc:
+            if exc.status_code == 400 and str(exc).strip().casefold() == "reward already claimed":
+                return {"task_id": task_id, "status": "already_claimed", "credits": 0}
+            raise
+        data = result.get("data") if isinstance(result, dict) else None
+        if isinstance(data, dict) and data.get("success") is False:
+            raise DramaUpstreamError(_message(data), code="REWARD_CLAIM_REJECTED", status_code=400)
+        amount = data.get("reward_amount") if isinstance(data, dict) else None
+        if (not isinstance(data, dict) or data.get("success") is not True
+                or data.get("task_id") != task_id or data.get("reward_type") != "credits"
+                or type(amount) not in (int, float) or not math.isfinite(amount) or amount <= 0):
+            raise DramaUpstreamError("领取响应无法确认，请刷新奖励状态", code="REWARD_CLAIM_UNCERTAIN")
+        return {"task_id": task_id, "status": "claimed", "credits": amount}
+
     def daily_checkin_status(self) -> dict[str, Any]:
-        tasks = self._request("GET", self.base + "/api/v1/task/list")["data"].get("tasks", [])
+        tasks = self.reward_tasks()
         task = next((item for item in tasks if item.get("id") == "daily_login"), {})
         signed = task.get("status") == "claimed" or bool(task.get("claimed_at"))
         return {"today_signed": signed, "can_checkedin": bool(task.get("reward_eligible")) and not signed,

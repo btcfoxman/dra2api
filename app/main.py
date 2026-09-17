@@ -326,6 +326,14 @@ def refresh_balance(account_id: int) -> dict[str, Any]:
     return check_account(account_id)
 
 
+@app.post("/api/accounts/{account_id}/rewards/claim", dependencies=[Depends(_admin_token)])
+def claim_account_rewards(account_id: int) -> dict[str, Any]:
+    try:
+        return service.claim_account_rewards(account_id)
+    except Exception as exc:
+        raise _detail(exc) from exc
+
+
 @app.post("/api/accounts/{account_id}/cdp/reconnect", dependencies=[Depends(_admin_token)])
 def reconnect_account(account_id: int) -> dict[str, Any]:
     if not database.get_account(account_id):

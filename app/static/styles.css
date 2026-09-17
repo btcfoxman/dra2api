@@ -129,6 +129,13 @@ tbody tr:hover { background: rgba(85, 215, 173, .035); }
 .concurrency-input { width: 52px; height: 23px; padding: 2px 4px; text-align: center; }
 .proxy { max-width: 180px; }
 .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
+.balance-heading { display: flex; align-items: center; gap: 10px; }
+.reward-button { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border: 1px solid #396958; border-radius: 3px; background: #152b23; color: var(--mint); font-size: 10px; white-space: nowrap; }
+.reward-button:hover:not(:disabled) { background: #214333; border-color: var(--mint); }
+.reward-button:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+.reward-button svg { width: 12px; height: 12px; }
+.reward-result { margin-top: 3px; color: var(--mint); }
+.reward-result.partial { color: var(--yellow); }
 .row-actions .icon-button { width: 25px; min-height: 25px; }
 .actions-col { text-align: right; width: 158px; }
 .result-col { min-width: 220px; }

@@ -30,6 +30,7 @@ from app.drama_client import (
     DramaAccountSuspended,
     DramaAuthError,
     DramaClient,
+    DramaRateLimited,
     DramaRiskBlocked,
     DramaUpstreamError,
     validate_approval,
@@ -145,6 +146,7 @@ class DRAService:
         self._running_maintenance: set[int] = set()
         self._active_maintenance: set[int] = set()
         self._resetting_profiles: set[int] = set()
+        self._claiming_rewards: set[int] = set()
         self._manual_browser_leases: dict[int, float] = {}
         self._text_video_image_locks: dict[int, threading.Lock] = {}
         self._stop = threading.Event()
@@ -469,6 +471,8 @@ class DRAService:
                 raise ValueError("account maintenance is in progress")
             if int(account_id) in self._resetting_profiles:
                 raise ValueError("account profile reset is in progress")
+            if int(account_id) in self._claiming_rewards:
+                raise ValueError("奖励领取正在进行，请稍后重试")
         if not account.get("external_cdp_url"):
             delete_managed_profile(account, self.settings)
         return self.db.delete_account(account_id)
@@ -496,6 +500,8 @@ class DRAService:
                 raise ValueError("account maintenance is already in progress")
             if account_id in self._resetting_profiles:
                 raise ValueError("account profile reset is already in progress")
+            if account_id in self._claiming_rewards:
+                raise ValueError("奖励领取正在进行，请稍后重试")
             self._resetting_profiles.add(account_id)
         previous_status = str(account.get("status") or "login_required")
         self.db.update_account(account_id, {"status": "profile_resetting", "last_error": ""})
@@ -560,6 +566,7 @@ class DRAService:
             if account_id in self._running_logins:
                 raise ValueError("登录仍在进行，出现需验证或登录结束后可打开人工验证")
             if (account_id in self._running_maintenance or account_id in self._resetting_profiles
+                    or account_id in self._claiming_rewards
                     or account.get("active_tasks")):
                 raise ValueError("账号正在执行任务或维护，请稍后打开人工验证")
             self._manual_browser_leases[account_id] = time.monotonic() + 120
@@ -600,7 +607,8 @@ class DRAService:
     def schedule_login(self, account_id: int) -> bool:
         account_id = int(account_id)
         with self._account_guard:
-            if account_id in self._running_logins or self._manual_browser_active(account_id):
+            if (account_id in self._running_logins or account_id in self._claiming_rewards
+                    or self._manual_browser_active(account_id)):
                 return False
             if not self.db.get_account(account_id, include_secrets=False):
                 return False
@@ -740,21 +748,107 @@ class DRAService:
         account: dict[str, Any],
         state: dict[str, Any],
     ) -> dict[str, Any] | None:
-        return self.db.update_account(
-            account_id,
-            {
+        with self._account_guard:
+            current = self.db.get_account(account_id, include_secrets=False) or {}
+            details = dict(state.get("buckets") or {})
+            for key in ("sign_reward_stats", "reward_claim_stats"):
+                if key in (current.get("balance_details") or {}):
+                    details[key] = current["balance_details"][key]
+            return self.db.update_account(account_id, {
                 "email": state.get("email") or account.get("email") or "",
                 "user_id": state.get("user_id") or account.get("user_id") or "",
                 "team_id": state.get("team_id") or account.get("team_id") or "",
                 "access_token": state.get("token") or account.get("access_token") or "",
                 "last_balance": state.get("available_balance"),
-                "balance_details": state.get("buckets") or {},
+                "balance_details": details,
                 "plan": state.get("plan") or "",
                 "status": "active",
                 "last_error": "",
                 "last_checked_at": now_ts(),
-            },
-        )
+            })
+
+    def claim_account_rewards(self, account_id: int) -> dict[str, Any]:
+        with self._account_guard:
+            if not self.db.get_account(account_id):
+                raise KeyError("account not found")
+            if (account_id in self._claiming_rewards or account_id in self._running_maintenance
+                    or account_id in self._running_logins or account_id in self._resetting_profiles
+                    or self._manual_browser_active(account_id)):
+                raise DramaUpstreamError("账号正在领取奖励、登录或维护，请稍后重试", code="ACCOUNT_BUSY", status_code=409)
+            self._claiming_rewards.add(account_id)
+        try:
+            return self._claim_account_rewards(account_id)
+        finally:
+            with self._account_guard:
+                self._claiming_rewards.discard(account_id)
+
+    def _claim_account_rewards(self, account_id: int) -> dict[str, Any]:
+        account = self.db.get_account(account_id)
+        client = self._client(account)
+        # Validate the Firebase identity before any reward write, including disabled accounts.
+        state, client = self._with_recovery(account, client, lambda item: item.account_state())
+        self._store_account_state(account_id, account, state)
+        tasks = client.reward_tasks()
+        eligible = {str(item["id"]): item for item in tasks
+                    if item.get("status") == "completed" and not item.get("claimed_at")
+                    and item.get("reward_eligible") is True
+                    and (item.get("reward") or {}).get("type") == "credits"}
+        results: list[dict[str, Any]] = []
+        for task_id, task in eligible.items():
+            entry = {"task_id": task_id, "name": str(task.get("name") or task_id), "credits": 0}
+            try:
+                entry.update(client.claim_reward(task_id))
+            except Exception as exc:
+                code = getattr(exc, "code", "REWARD_CLAIM_UNCERTAIN")
+                uncertain = (code in {"SUBMISSION_UNCERTAIN", "REWARD_CLAIM_UNCERTAIN"}
+                             or getattr(exc, "status_code", 500) >= 500)
+                entry.update(status="unknown" if uncertain else "failed", code=code, message=str(exc)[:500])
+                if uncertain:
+                    # A lost POST response must never trigger an automatic second claim.
+                    try:
+                        latest = next((item for item in client.reward_tasks() if item["id"] == task_id), {})
+                        if latest.get("status") == "claimed" or latest.get("claimed_at"):
+                            entry.update(status="reconciled", message="上游已确认领取；本次新增积分以余额查询为准")
+                    except Exception:
+                        LOGGER.info("account %s reward %s reconciliation unavailable", account_id, task_id)
+                results.append(entry)
+                if uncertain or isinstance(exc, (DramaAuthError, DramaRiskBlocked, DramaAccountSuspended, DramaRateLimited)):
+                    break
+                continue
+            results.append(entry)
+        refreshed, refresh_error = False, ""
+        try:
+            self._store_account_state(account_id, account, client.account_state())
+            refreshed = True
+        except Exception as exc:
+            refresh_error = str(exc)[:500]
+        claimed = [item for item in results if item["status"] == "claimed"]
+        report = {"checked_at": now_ts(), "eligible_count": len(eligible), "results": results,
+                  "claimed_count": len(claimed), "claimed_credits": sum(item["credits"] for item in claimed),
+                  "already_claimed_count": sum(item["status"] == "already_claimed" for item in results),
+                  "reconciled_count": sum(item["status"] == "reconciled" for item in results),
+                  "failed_count": sum(item["status"] == "failed" for item in results),
+                  "unknown_count": sum(item["status"] == "unknown" for item in results),
+                  "unattempted_count": len(eligible) - len(results),
+                  "balance_refreshed": refreshed, "refresh_error": refresh_error}
+        parts = ([f"已领取 {len(claimed)} 项，+{report['claimed_credits']:g} 积分"] if claimed else [])
+        if not eligible:
+            parts.append("暂无可领取奖励")
+        for key, label in (("already_claimed_count", "项已领取，已跳过"), ("reconciled_count", "项已核实领取"),
+                           ("failed_count", "项领取失败"), ("unknown_count", "项结果待确认"),
+                           ("unattempted_count", "项未尝试")):
+            if report[key]:
+                parts.append(f"{report[key]} {label}")
+        parts.append("额度已刷新" if refreshed else "额度刷新失败，请稍后检测账号")
+        report["message"] = "；".join(parts)
+        report["status"] = "partial" if (report["failed_count"] or report["unknown_count"]
+                                        or report["unattempted_count"] or not refreshed) else "success"
+        with self._account_guard:
+            current = self.db.get_account(account_id, include_secrets=False) or {}
+            details = dict(current.get("balance_details") or {})
+            details["reward_claim_stats"] = report
+            self.db.update_account(account_id, {"balance_details": details})
+        return {**report, "account": self.db.get_account(account_id, include_secrets=False)}
 
     def create_task(self, payload: dict[str, Any], *, caller_request: dict[str, Any] | None = None) -> dict[str, Any]:
         with self._task_submit_lock:
@@ -1286,12 +1380,24 @@ class DRAService:
         account_id: int,
         stats: dict[str, Any],
     ) -> None:
-        account = self.db.get_account(account_id, include_secrets=False) or {}
-        details = dict(account.get("balance_details") or {})
-        details["sign_reward_stats"] = dict(stats)
-        self.db.update_account(account_id, {"balance_details": details})
+        with self._account_guard:
+            account = self.db.get_account(account_id, include_secrets=False) or {}
+            details = dict(account.get("balance_details") or {})
+            details["sign_reward_stats"] = dict(stats)
+            self.db.update_account(account_id, {"balance_details": details})
 
     def _run_daily_checkin(self, account_id: int) -> None:
+        with self._account_guard:
+            if account_id in self._claiming_rewards:
+                return
+            self._claiming_rewards.add(account_id)
+        try:
+            self._run_daily_checkin_locked(account_id)
+        finally:
+            with self._account_guard:
+                self._claiming_rewards.discard(account_id)
+
+    def _run_daily_checkin_locked(self, account_id: int) -> None:
         account = self.db.get_account(account_id, include_secrets=True)
         if not account or not account.get("enabled"):
             return
@@ -1358,6 +1464,7 @@ class DRAService:
                             account_id in self._running_logins
                             or account_id in self._running_maintenance
                             or account_id in self._resetting_profiles
+                            or account_id in self._claiming_rewards
                             or self._manual_browser_active(account_id)
                         ):
                             continue

@@ -83,6 +83,28 @@ def test_https_admin_cookie_is_secure(api):
     assert "; Secure" in response.headers["set-cookie"]
 
 
+def test_claim_rewards_requires_admin_and_returns_masked_account(api, service, monkeypatch):
+    from unittest.mock import Mock
+    account = service.db.upsert_account({"name": "rewards", "access_token": "reward-secret", "enabled": False})
+    path = f"/api/accounts/{account['id']}/rewards/claim"
+    client = Mock()
+    client.account_state.return_value = {"available_balance": 10200, "buckets": {"credits": 10200}}
+    client.reward_tasks.return_value = []
+    monkeypatch.setattr(service, "_client", lambda _: client)
+    assert api.post(path).status_code == 401
+    assert api.post(path, headers={"Authorization": "Bearer test-api"}).status_code == 401
+    client.account_state.assert_not_called()
+    api.post("/login", data={"token": "test-admin"})
+    response = api.post(path)
+    assert response.status_code == 200
+    assert response.json()["account"]["last_balance"] == 10200
+    assert "reward-secret" not in response.text
+    service._claiming_rewards.add(account["id"])
+    assert api.post(path).status_code == 409
+    service._claiming_rewards.clear()
+    assert api.post("/api/accounts/99999/rewards/claim").status_code == 404
+
+
 @pytest.mark.parametrize("path", ["/login", "/"])
 def test_html_uses_versioned_assets_to_avoid_stale_cdn_content(api, path):
     api.post("/login", data={"token": "test-admin"}, follow_redirects=False)

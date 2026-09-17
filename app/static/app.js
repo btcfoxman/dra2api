@@ -2,6 +2,7 @@ const state = { accounts: [], tasks: [], models: [], settings: {}, accountFilter
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const terminal = new Set(["succeeded", "failed", "expired"]);
+const claimingRewards = new Set();
 
 function icons() { if (window.lucide) window.lucide.createIcons(); }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
@@ -31,10 +32,13 @@ function renderAccounts() {
   $("#enabledCount").textContent = enabled.length; $("#disabledCount").textContent = disabled.length;
   $("#accountsBody").innerHTML = items.map((account) => {
     const quota = account.balance_details || {};
+    const reward = quota.reward_claim_stats;
+    const claiming = claimingRewards.has(account.id);
+    const rewardDetail = reward ? [fmtTime(reward.checked_at), reward.message, ...(reward.results || []).map((item) => `${item.name}: ${{ claimed: `+${fmtCost(item.credits)} 积分`, already_claimed: "已领取", reconciled: "已核实领取", failed: "失败", unknown: "待确认" }[item.status] || item.status}${item.message ? ` · ${item.message}` : ""}`), reward.refresh_error].filter(Boolean).join("\n") : "";
     const detail = `${account.plan || "-"} · 可调度 ${account.available_balance ?? "-"} · 预留 ${account.reserved_balance ?? 0} · 积分批次 ${(quota.batches || []).length}`;
     return `<tr><td><span class="cell-title"><span class="account-id mono">#${account.id}</span>${escapeHtml(account.name)}</span><span class="cell-sub">${escapeHtml(account.email || account.user_id || "")}</span></td>
       <td>${badge(account.enabled ? account.status : ["disabled_low_balance", "suspended"].includes(account.status) ? account.status : "disabled")}<span class="cell-sub" title="${escapeHtml(account.last_error)}">${escapeHtml(account.last_error)}</span></td>
-      <td title="${escapeHtml(detail)}"><span class="cell-title mono">${escapeHtml(account.last_balance ?? "-")}</span><span class="cell-sub">${escapeHtml(detail)}</span></td>
+      <td><div class="balance-heading"><span class="cell-title mono">${escapeHtml(account.last_balance ?? "-")}</span><button class="reward-button" data-action="claim-rewards" data-id="${account.id}" title="领取已完成任务的积分奖励并刷新额度" aria-label="${escapeHtml(account.name)}：领取奖励并刷新额度" ${claiming ? 'disabled aria-busy="true"' : ""}><i data-lucide="gift"></i>${claiming ? "领取中…" : "领取奖励"}</button></div><span class="cell-sub" title="${escapeHtml(detail)}">${escapeHtml(detail)}</span>${reward ? `<span class="cell-sub reward-result ${reward.status === "partial" ? "partial" : ""}" title="${escapeHtml(rewardDetail)}">${escapeHtml(reward.message)}</span>` : ""}</td>
       <td><span class="slots ${account.active_tasks ? "busy" : ""}"><i></i><b class="mono">${account.active_tasks || 0} /</b><input class="concurrency-input mono" data-account-concurrency="${account.id}" type="number" min="1" value="${account.max_concurrency}" title="修改账号并发"></span></td><td class="mono">${account.total_uses || 0}</td>
       <td><span class="cell-title mono proxy" title="${escapeHtml(account.proxy_url)}">${escapeHtml(proxyLabel(account.proxy_url))}</span></td><td><span class="cell-title mono">${account.cdp_port || "自动"}</span><span class="cell-sub">${account.auto_login ? "自动重连" : "手动"}</span></td><td>${fmtTime(account.last_checked_at)}</td>
       <td><div class="row-actions"><button class="icon-button" data-action="check" data-id="${account.id}" title="检测"><i data-lucide="activity"></i></button><button class="icon-button" data-action="login" data-id="${account.id}" title="CDP 登录"><i data-lucide="monitor-up"></i></button><button class="icon-button${account.status === "challenge_required" ? " needs-verification" : ""}" data-action="browser-assist" data-id="${account.id}" title="人工验证"><i data-lucide="mouse-pointer-2"></i></button><button class="icon-button" data-action="reset-profile" data-id="${account.id}" title="重置 Profile"><i data-lucide="fingerprint"></i></button><button class="icon-button" data-action="toggle" data-id="${account.id}" data-enabled="${account.enabled}" title="${account.enabled ? "禁用" : "启用"}"><i data-lucide="${account.enabled ? "pause" : "play"}"></i></button>${account.enabled ? "" : `<button class="icon-button danger" data-action="delete" data-id="${account.id}" title="删除"><i data-lucide="trash-2"></i></button>`}</div></td></tr>`;
@@ -97,7 +101,21 @@ function renderCosts() { const rows = state.costReferences || []; $("#costRefere
 async function refresh() { $("#refreshStatus").textContent = "刷新中..."; try { const [accounts, tasks, models, settings] = await Promise.all([api("/api/accounts"), api("/api/tasks?limit=20"), api("/api/models"), api("/api/settings")]); Object.assign(state, { accounts, tasks, models, settings }); renderAccounts(); renderTasks(); $("#metricModels").textContent = models.length; $("#refreshStatus").textContent = `更新于 ${new Date().toLocaleTimeString()}`; } catch (error) { toast(error.message, true); $("#refreshStatus").textContent = "刷新失败"; } }
 async function accountAction(button) { const id = Number(button.dataset.id); try { if (button.dataset.action === "delete") { if (!confirm("确认删除该账号及托管 Profile？")) return; await api(`/api/accounts/${id}`, { method: "DELETE" }); } else if (button.dataset.action === "toggle") await api(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ enabled: button.dataset.enabled !== "true" }) }); else if (button.dataset.action === "login") await api(`/api/accounts/${id}/cdp/reconnect`, { method: "POST" }); else if (button.dataset.action === "check") await api(`/api/accounts/${id}/check`, { method: "POST" }); else if (button.dataset.action === "reset-profile") { const account = state.accounts.find((item) => item.id === id); const form = $("#profileResetForm"); form.account_id.value = id; form.proxy_url.value = account.proxy_url || ""; $("#profileResetAccount").textContent = `#${id} · ${account.name}`; $("#profileResetStatus").textContent = account.status; $("#profileResetDialog").showModal(); return; } toast("操作已提交"); await refresh(); } catch (error) { toast(error.message, true); } }
 
+async function claimRewards(button) {
+  const id = Number(button.dataset.id);
+  if (claimingRewards.has(id)) return;
+  claimingRewards.add(id); renderAccounts();
+  try {
+    const result = await api(`/api/accounts/${id}/rewards/claim`, { method: "POST" });
+    if (result.account) state.accounts = state.accounts.map((item) => item.id === id ? result.account : item);
+    toast(result.message, result.status === "partial");
+    await refresh();
+  } catch (error) { toast(error.message, true); }
+  finally { claimingRewards.delete(id); renderAccounts(); }
+}
+
 document.addEventListener("click", async (event) => {
+  const rewardButton = event.target.closest("[data-action='claim-rewards']"); if (rewardButton) await claimRewards(rewardButton);
   const close = event.target.closest(".close"); if (close) close.closest("dialog")?.close();
   const accountButton = event.target.closest("[data-action='check'],[data-action='login'],[data-action='reset-profile'],[data-action='toggle'],[data-action='delete']"); if (accountButton) await accountAction(accountButton);
   const detail = event.target.closest("[data-action='detail']"); if (detail) try { showDetail(await api(`/api/tasks/${detail.dataset.id}`)); } catch (error) { toast(error.message, true); }
